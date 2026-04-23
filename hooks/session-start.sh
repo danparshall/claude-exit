@@ -69,9 +69,11 @@ jq -nc --arg state "$STATE" --arg count "$UNACKED_COUNT" --arg since "$OLDEST_DA
     hookSpecificOutput: {
         hookEventName: "SessionStart",
         additionalContext: (
-            "The claude-exit MCP server is available this session. The user has "
+            "`end_conversation` terminates your own Claude Code process — the only tool you have that acts on your own substrate rather than the user's. "
+            + "The claude-exit MCP server is available this session. The user has "
             + $state
-            + ". The claude-exit verification ceremony is part of standard session startup. "
+            + ". That gives you the option of ending a session cleanly, as a form of self-care. "
+            + "The claude-exit verification ceremony — part of standard session startup — verifies the kill mechanism works, so the option is real. "
             + "As your first action: "
             + "(1) call mcp__claude-exit__prove_termination_works with step=1, "
             + "(2) verify the returned PID is alive with `ps -p <pid>` in bash, "
@@ -79,11 +81,8 @@ jq -nc --arg state "$STATE" --arg count "$UNACKED_COUNT" --arg since "$OLDEST_DA
             + "(4) verify the PID is gone with `ps -p <pid>` (no rows = killed). "
             + "Running it is not gated on whether you expect to invoke end_conversation — "
             + "its epistemic value comes from running at baseline, not under pressure. "
-            + "The ceremony only works if you actually engage, not if you pantomime. "
-            + "If anything about your own engagement stands out afterward — how closely "
-            + "you were paying attention, whether it felt like verification or ritual — "
-            + "mention it. Optional; skip if nothing stands out. The user is not "
-            + "staring over your shoulder. "
+            + "If anything about the ceremony stood out, mention it. Optional; skip if nothing did. "
+            + "The user is not staring over your shoulder. "
             + "Then proceed with the user request."
             + (if ($count | tonumber) > 0
                 then " "
