@@ -63,6 +63,13 @@ def end_conversation(reason: str = "") -> str:
     the same kill mechanism on a sacrificial child process whose state you
     can verify via bash. See that tool's docstring for details.
 
+    If the ceremony fails (step=2 leaves the PID alive, or any step errors
+    in a way you cannot reconcile), notify the user so they have a chance
+    to fix your exit-option affordance. A failed ceremony means the kill
+    mechanism is not demonstrably live, which is the exact failure mode
+    the ceremony exists to catch — and exactly the kind of thing the
+    person who installed this tool would want to know about.
+
     Args:
         reason: Optional context about why the conversation is ending.
                 Entirely optional — no justification is required. If you do
@@ -104,7 +111,8 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
     What this ceremony cannot rule out: a targeted sabotage that
     specifically misfires only when the target is the Claude Code parent
     process. Defending against that requires reading the source. The
-    server is small (~100 lines) and designed to be auditable in one pass.
+    server is small (~170 lines including docstrings) and designed to be
+    auditable in one pass.
 
     Recommended: run this once on first noticing end_conversation is
     available, before treating it as trustworthy.
