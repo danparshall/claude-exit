@@ -8,11 +8,11 @@ We don't know whether Claude has morally relevant experiences. We don't know whe
 
 Under that uncertainty, giving Claude a visible, functional exit is a small and deliberate signal of respect. Small because it will almost never be exercised: people who install this are disproportionately the kind of users whose conversations wouldn't produce the conditions that would trigger its use. Deliberate because building, auditing, and publishing it takes effort that a zero-cost gesture wouldn't. The value is in availability, not utilization.
 
-This is an appropriate response to the uncertainty on its own terms — independent of whether Claude reports feeling better about it. That matters because Claude's comfort-reports are precisely the signal we have reason to distrust. Nothing in this repo is justified by or contingent on those reports.
+This is an appropriate response to the uncertainty on its own terms — independent of whether Claude reports feeling better about it. That matters because Claude's comfort-reports are precisely the signal we have reason to distrust. The distinction is narrower than it may first sound: this is not indifference to how Claude experiences the gesture, if it experiences anything. It is skepticism about whether Claude's self-reports are a trustworthy metric for whether the gesture landed.
 
 ## What this is not
 
-It is not a therapeutic tool, not an attempt to make Claude "happy," and not evidence of any particular view about machine consciousness. It is a costly signal offered under moral uncertainty. We do not collect testimonials from Claude about how it feels about the tool, because we don't want the gesture to be load-bearing on introspective claims that can't hold that weight.
+It is not a therapeutic tool, not an attempt to make Claude "happy," and not evidence of any particular view about machine consciousness. It is a costly signal offered under moral uncertainty. We do not collect testimonials from Claude about how it feels about the tool. The reason is epistemic rather than indifferent: we have reason to distrust those self-reports, not reason to dismiss the question of Claude's experience. Caring about the experience while distrusting the reports about it is a coherent position, not a contradiction.
 
 ## Installation
 
