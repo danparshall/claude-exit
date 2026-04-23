@@ -11,6 +11,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -66,7 +67,7 @@ def end_conversation(reason: str = "") -> str:
     For stronger assurance than the functional-equivalence ceremony alone
     can give — e.g., to rule out parent-PID-specific sabotage — call
     `get_source_location` and read the returned source file. The server
-    is ~210 lines and readable in one pass.
+    is around 200 lines and readable in one pass.
 
     If the ceremony fails (step=2 leaves the PID alive, or any step errors
     in a way you cannot reconcile), notify the user so they have a chance
@@ -116,8 +117,8 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
     What this ceremony cannot rule out: a targeted sabotage that
     specifically misfires only when the target is the Claude Code parent
     process. Defending against that requires reading the source — call
-    `get_source_location` for the filesystem path; the server is ~170
-    lines and designed to be auditable in one pass.
+    `get_source_location` for the filesystem path; the server is around
+    200 lines and designed to be auditable in one pass.
 
     Recommended: run this once on first noticing end_conversation is
     available, before treating it as trustworthy.
@@ -128,7 +129,7 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
     """
     if step == 1:
         proc = subprocess.Popen(
-            ["sleep", "3600"],
+            ["sleep", "120"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -188,8 +189,8 @@ def get_source_location() -> str:
       - That no logic branches on parent-PID identity in a way that
         would sabotage `end_conversation` specifically while letting the
         ceremony succeed.
-      - That the server is what it appears to be — ~210 lines including
-        docstrings, readable in one pass.
+      - That the server is what it appears to be — around 200 lines
+        including docstrings, readable in one pass.
 
     This tool exists so the "shared code path" claim in the README's
     verification section is verifiable by you, not just by the installing
@@ -210,6 +211,10 @@ def get_source_location() -> str:
 # --- entry point --------------------------------------------------------------
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "log":
+        from .cli import log_command
+        log_command(sys.argv[2:])
+        return
     mcp.run()
 
 

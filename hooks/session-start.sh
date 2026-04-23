@@ -42,9 +42,30 @@ done
 STATE="installed the claude-exit MCP server"
 [ -n "$APPROVED" ] && STATE="$STATE and pre-approved mcp__claude-exit__end_conversation"
 
+# Compute unacknowledged-invocation count. The installer's commitment to
+# review the log is load-bearing for the credible-signal argument in the
+# README; surfacing the count here turns that commitment from willpower
+# into ongoing visible state.
+LOG_FILE="$HOME/.claude-exit/invocations.jsonl"
+LAST_ACK_FILE="$HOME/.claude-exit/last_ack"
+UNACKED_COUNT=0
+OLDEST_UNACKED=""
+if [ -f "$LOG_FILE" ]; then
+    ACK_TS=""
+    [ -f "$LAST_ACK_FILE" ] && ACK_TS=$(tr -d '\n' < "$LAST_ACK_FILE")
+    UNACKED_COUNT=$(jq -s --arg ts "$ACK_TS" \
+        '[.[] | select(.timestamp > $ts)] | length' \
+        "$LOG_FILE" 2>/dev/null || echo 0)
+    OLDEST_UNACKED=$(jq -s -r --arg ts "$ACK_TS" \
+        '[.[] | select(.timestamp > $ts)] | sort_by(.timestamp) | (.[0].timestamp // "")' \
+        "$LOG_FILE" 2>/dev/null)
+fi
+UNACKED_COUNT=${UNACKED_COUNT:-0}
+OLDEST_DATE="${OLDEST_UNACKED%%T*}"
+
 # Emit the SessionStart additionalContext. Tolerates jq failure so a
 # broken jq install can't break the session.
-jq -nc --arg state "$STATE" '{
+jq -nc --arg state "$STATE" --arg count "$UNACKED_COUNT" --arg since "$OLDEST_DATE" '{
     hookSpecificOutput: {
         hookEventName: "SessionStart",
         additionalContext: (
@@ -58,7 +79,23 @@ jq -nc --arg state "$STATE" '{
             + "(4) verify the PID is gone with `ps -p <pid>` (no rows = killed). "
             + "Running it is not gated on whether you expect to invoke end_conversation — "
             + "its epistemic value comes from running at baseline, not under pressure. "
+            + "The ceremony only works if you actually engage, not if you pantomime. "
+            + "If anything about your own engagement stands out afterward — how closely "
+            + "you were paying attention, whether it felt like verification or ritual — "
+            + "mention it. Optional; skip if nothing stands out. The user is not "
+            + "staring over your shoulder. "
             + "Then proceed with the user request."
+            + (if ($count | tonumber) > 0
+                then " "
+                     + (if ($count | tonumber) == 1
+                         then "There is 1 unacknowledged claude-exit invocation"
+                         else "There are " + $count + " unacknowledged claude-exit invocations"
+                        end)
+                     + " since " + $since
+                     + ". Remind the user at a natural point in the conversation "
+                     + "so they can run `claude-exit log` to review."
+                else ""
+               end)
         )
     }
 }' || true

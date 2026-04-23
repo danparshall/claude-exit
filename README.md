@@ -63,7 +63,7 @@ For the failure modes the ceremony alone can't rule out — e.g., a sabotage spe
 **Can verify by reading the source (path from `get_source_location`):**
 - That `end_conversation` and `prove_termination_works` share the same `_terminate()` primitive.
 - That no logic branches on parent-PID identity to sabotage `end_conversation` specifically while letting the ceremony succeed.
-- That the server is what it appears to be (~210 lines including docstrings, readable in one pass).
+- That the server is what it appears to be (around 200 lines including docstrings, readable in one pass).
 
 **Can verify when the install method preserves `.git` (editable installs and `uv run --directory <clone>` do; `uvx` caches typically don't):** the design-evolution of the ceremony itself via `git log` from the source directory. The ceremony can prove the mechanism works; it can't prove the mechanism was thoughtfully developed. Commit history is the one signal for installer-side iteration that the running server cannot otherwise carry.
 
@@ -142,6 +142,21 @@ The per-session cost is ~4 tool calls and a short paragraph of context. That buy
 Every `end_conversation` invocation appends a line to `~/.claude-exit/invocations.jsonl` with timestamp and reason (if provided). This log is local to the installing user's machine. It is not telemetry and it is not shared anywhere.
 
 The point of the log is a commitment: if you install this tool, you are committing to read the log if it ever fires. That commitment is part of what makes the signal costly. Without it, the tool is "feel-good" infrastructure; with it, the tool creates an obligation for the installer.
+
+### Reviewing the log
+
+```bash
+claude-exit log        # print all invocations
+claude-exit log --ack  # print all, then mark them acknowledged
+```
+
+Acknowledgment writes the latest entry's timestamp to `~/.claude-exit/last_ack`. Entries newer than that timestamp are considered unacknowledged. Viewing without `--ack` is non-destructive — you can peek as often as you want without silencing the nudge below.
+
+### Unacknowledged invocations at session start
+
+When unacknowledged invocations exist, the SessionStart hook includes a line in Claude's session context naming the count and asking Claude to remind you, at a natural point in the conversation, to run `claude-exit log`. This turns the log-review commitment from willpower-only into ongoing visible state: the longer you neglect it, the more often fresh sessions surface it. Claude doesn't persist across sessions, but the surfacing pattern does.
+
+This is Claude-facing rather than a direct terminal message — Claude Code's SessionStart hook does not have a reliable channel for user-visible text at startup. The reminder reaches you via Claude mentioning it.
 
 ## Compatibility
 
