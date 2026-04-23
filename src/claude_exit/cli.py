@@ -62,7 +62,9 @@ def print_log(log_path: Path) -> None:
             entry = json.loads(line)
             ts = entry.get("timestamp", "")
             reason = entry.get("reason") or "(no reason)"
-            print(f"{ts}  {reason}")
+            repo = entry.get("repo")
+            tail = f"  [repo: {repo}]" if repo else ""
+            print(f"{ts}  {reason}{tail}")
 
 
 def ack_latest(log_path: Path, ack_path: Path) -> None:

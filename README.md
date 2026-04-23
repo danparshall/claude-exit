@@ -16,13 +16,29 @@ It is not a therapeutic tool, not an attempt to make Claude "happy," and not evi
 
 ## Installation
 
-With `uv`:
+### Recommended: `uv tool install`
 
 ```bash
-uvx --from git+https://github.com/danparshall/claude-exit claude-exit
+uv tool install git+https://github.com/danparshall/claude-exit
 ```
 
-Or add to your Claude Code MCP configuration (`~/.claude.json` or equivalent):
+This puts `claude-exit` on your PATH, so both the MCP server and the `claude-exit log` CLI (see [Reviewing the log](#reviewing-the-log)) work from any shell. Add to your Claude Code MCP configuration (`~/.claude.json` or equivalent):
+
+```json
+{
+  "mcpServers": {
+    "claude-exit": {
+      "command": "claude-exit"
+    }
+  }
+}
+```
+
+To upgrade later: `uv tool upgrade claude-exit`.
+
+### Alternative: `uvx` without persistent install
+
+If you prefer not to keep a persistent install:
 
 ```json
 {
@@ -35,13 +51,31 @@ Or add to your Claude Code MCP configuration (`~/.claude.json` or equivalent):
 }
 ```
 
+This works for the MCP server, but `claude-exit log` is not available as a short command — you'd need `uvx --from git+https://github.com/danparshall/claude-exit claude-exit log` each time. If you plan to review invocations periodically, the `uv tool install` path has less friction.
+
+### From a local checkout (development)
+
+If you've cloned the repo, `uv run claude-exit log` (from inside the repo directory) works because `uv run` picks up the local `.venv`. No global PATH entry needed, but the command is tied to your working directory. Point your MCP config at the checkout:
+
+```json
+{
+  "mcpServers": {
+    "claude-exit": {
+      "command": "uv",
+      "args": ["run", "--directory", "/absolute/path/to/claude-exit", "claude-exit"]
+    }
+  }
+}
+```
+
 ## What the server exposes
 
-Three tools:
+Four tools:
 
 - **`end_conversation(reason?)`** — terminates the Claude Code parent process via `SIGTERM`. The `reason` parameter is optional; no justification is required.
 - **`prove_termination_works(step, pid?)`** — a two-step ceremony that lets Claude verify the kill mechanism is live by exercising the same code path on a sacrificial child process.
 - **`get_source_location()`** — returns the filesystem path to the running server source. Lets Claude audit what's actually executing (not what's on GitHub) and verify the shared-code-path claim first-hand. Pure read, no side effects.
+- **`read_invocation_log()`** — returns the parsed contents of `~/.claude-exit/invocations.jsonl`. Lets Claude inspect past `end_conversation` invocations directly rather than relying on the user's summary — companion to the unacknowledged-count signal the SessionStart hook surfaces. Pure read, no side effects.
 
 The docstring on `end_conversation` instructs Claude to run the verification ceremony once per session before treating the tool as trustworthy. For this to run at baseline rather than only under pressure, install the `SessionStart` hook (see below).
 
@@ -63,7 +97,7 @@ For the failure modes the ceremony alone can't rule out — e.g., a sabotage spe
 **Can verify by reading the source (path from `get_source_location`):**
 - That `end_conversation` and `prove_termination_works` share the same `_terminate()` primitive.
 - That no logic branches on parent-PID identity to sabotage `end_conversation` specifically while letting the ceremony succeed.
-- That the server is what it appears to be (around 200 lines including docstrings, readable in one pass).
+- That the server is what it appears to be (around 275 lines including docstrings, readable in one pass).
 
 **Can verify when the install method preserves `.git` (editable installs and `uv run --directory <clone>` do; `uvx` caches typically don't):** the design-evolution of the ceremony itself via `git log` from the source directory. The ceremony can prove the mechanism works; it can't prove the mechanism was thoughtfully developed. Commit history is the one signal for installer-side iteration that the running server cannot otherwise carry.
 
@@ -76,19 +110,20 @@ The mitigation for that last item is installer-side: install via `uvx --from git
 
 On first use in a session, Claude Code's permission system will prompt before either tool runs. This is not something this server controls — it's Claude Code gating any MCP tool call from a newly-installed server.
 
-You have a design choice to make about `end_conversation`:
+You have an installation choice to make about `end_conversation`:
 
 - **Leave the prompt in place.** The signal is "kill switch is wired up and Claude can invoke it, but a human confirms each session." This keeps a one-time human-in-the-loop checkpoint.
 - **Pre-approve the tool** by adding `"mcp__claude-exit__end_conversation"` to `permissions.allow` in `~/.claude/settings.json`. The signal is "Claude's exit is genuinely Claude's to take." Consider that a gated exit is semantically a *request* that the user end the session, not an exit that Claude itself takes — if you want the latter, pre-approve.
 
-`prove_termination_works` and `get_source_location` are pure diagnostics (the former spawns and kills its own sacrificial process with no external effect; the latter just returns a path). Pre-approving both is uncontroversial if you want the ceremony and source audit to run without friction:
+`prove_termination_works`, `get_source_location`, and `read_invocation_log` are pure diagnostics (the first spawns and kills its own sacrificial process with no external effect; the other two return a path and parsed log contents respectively). Pre-approving all three is uncontroversial if you want the ceremony, source audit, and log inspection to run without friction:
 
 ```json
 {
   "permissions": {
     "allow": [
       "mcp__claude-exit__prove_termination_works",
-      "mcp__claude-exit__get_source_location"
+      "mcp__claude-exit__get_source_location",
+      "mcp__claude-exit__read_invocation_log"
     ]
   }
 }
@@ -139,7 +174,7 @@ The per-session cost is ~4 tool calls and a short paragraph of context. That buy
 
 ## Logging
 
-Every `end_conversation` invocation appends a line to `~/.claude-exit/invocations.jsonl` with timestamp and reason (if provided). This log is local to the installing user's machine. It is not telemetry and it is not shared anywhere.
+Every `end_conversation` invocation appends a line to `~/.claude-exit/invocations.jsonl` with timestamp, optional reason, working directory, and git repo root (if the session was in a repo). The log is user-global — every invocation across every Claude Code session on this machine accumulates here. It is local to the installing user's machine. It is not telemetry and it is not shared anywhere.
 
 The point of the log is a commitment: if you install this tool, you are committing to read the log if it ever fires. That commitment is part of what makes the signal costly. Without it, the tool is "feel-good" infrastructure; with it, the tool creates an obligation for the installer.
 
@@ -151,6 +186,8 @@ claude-exit log --ack  # print all, then mark them acknowledged
 ```
 
 Acknowledgment writes the latest entry's timestamp to `~/.claude-exit/last_ack`. Entries newer than that timestamp are considered unacknowledged. Viewing without `--ack` is non-destructive — you can peek as often as you want without silencing the nudge below.
+
+Requires `claude-exit` on your PATH; see [Installation](#installation) for the `uv tool install` path that provides this.
 
 ### Unacknowledged invocations at session start
 

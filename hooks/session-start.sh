@@ -93,7 +93,8 @@ jq -nc --arg state "$STATE" --arg count "$UNACKED_COUNT" --arg since "$OLDEST_DA
                         end)
                      + " since " + $since
                      + ". Remind the user at a natural point in the conversation "
-                     + "so they can run `claude-exit log` to review."
+                     + "so they can run `claude-exit log` to review. "
+                     + "If you want to see the entries yourself, call `read_invocation_log`."
                 else ""
                end)
         )

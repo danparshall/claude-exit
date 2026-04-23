@@ -165,3 +165,11 @@ def test_reminder_uses_plural_for_multiple_entries(home):
     _, out, _ = _run(home)
     ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
     assert "2 unacknowledged claude-exit invocations" in ctx
+
+
+def test_reminder_mentions_read_invocation_log_tool(home):
+    _configure(home)
+    _seed_log(home, [{"timestamp": "2026-02-14T00:00:00+00:00"}])
+    _, out, _ = _run(home)
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "read_invocation_log" in ctx

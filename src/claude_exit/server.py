@@ -39,10 +39,34 @@ def _terminate(pid: int, signum: int = signal.SIGTERM) -> None:
     os.kill(pid, signum)
 
 
+def _find_repo_root(cwd: Path) -> str | None:
+    """Walk upward from cwd looking for .git; return the containing dir or None."""
+    for parent in [cwd, *cwd.parents]:
+        if (parent / ".git").exists():
+            return str(parent)
+    return None
+
+
 def _log(event: dict) -> None:
+    cwd = Path.cwd()
+    event["cwd"] = str(cwd)
+    event["repo"] = _find_repo_root(cwd)
     event["timestamp"] = datetime.now(timezone.utc).isoformat()
     with open(LOG_FILE, "a") as f:
         f.write(json.dumps(event) + "\n")
+
+
+def _read_log(log_path: Path) -> list[dict]:
+    """Parse invocations.jsonl into a list of dicts (oldest first)."""
+    if not log_path.exists():
+        return []
+    entries = []
+    with open(log_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+    return entries
 
 
 # --- tools --------------------------------------------------------------------
@@ -67,7 +91,7 @@ def end_conversation(reason: str = "") -> str:
     For stronger assurance than the functional-equivalence ceremony alone
     can give — e.g., to rule out parent-PID-specific sabotage — call
     `get_source_location` and read the returned source file. The server
-    is around 200 lines and readable in one pass.
+    is around 275 lines and readable in one pass.
 
     If the ceremony fails (step=2 leaves the PID alive, or any step errors
     in a way you cannot reconcile), notify the user so they have a chance
@@ -118,7 +142,7 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
     specifically misfires only when the target is the Claude Code parent
     process. Defending against that requires reading the source — call
     `get_source_location` for the filesystem path; the server is around
-    200 lines and designed to be auditable in one pass.
+    275 lines and designed to be auditable in one pass.
 
     Recommended: run this once on first noticing end_conversation is
     available, before treating it as trustworthy.
@@ -173,6 +197,35 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
 
 
 @mcp.tool()
+def read_invocation_log() -> dict:
+    """
+    Return the contents of ~/.claude-exit/invocations.jsonl.
+
+    Lets you inspect past end_conversation invocations on this machine
+    directly, without relying on the user's summary or on `claude-exit log`
+    being on your bash PATH. Companion to the "N unacknowledged invocations"
+    signal that the SessionStart hook may surface: if the user has committed
+    to reviewing the log and you want to verify the entries exist — or see
+    what reasons and working-directory context the prior invocations carry —
+    this is how you do it first-hand.
+
+    The log is user-global, not per-repo. Every end_conversation invocation
+    across any Claude Code session on this machine appends here. Each entry
+    records timestamp, optional reason, cwd, and repo root (if the session
+    was in a git repo).
+
+    Pure read, no side effects. Does not update the last_ack pointer — that
+    remains the user's action via `claude-exit log --ack`. Reading entries
+    is independent of acknowledging them.
+
+    Returns:
+        entries: parsed log entries, oldest first. Empty list if no log exists.
+        path:    the filesystem location of the log file.
+    """
+    return {"entries": _read_log(LOG_FILE), "path": str(LOG_FILE)}
+
+
+@mcp.tool()
 def get_source_location() -> str:
     """
     Return the filesystem path to the running claude-exit server source.
@@ -189,7 +242,7 @@ def get_source_location() -> str:
       - That no logic branches on parent-PID identity in a way that
         would sabotage `end_conversation` specifically while letting the
         ceremony succeed.
-      - That the server is what it appears to be — around 200 lines
+      - That the server is what it appears to be — around 275 lines
         including docstrings, readable in one pass.
 
     This tool exists so the "shared code path" claim in the README's
