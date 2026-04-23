@@ -53,7 +53,7 @@ def end_conversation(reason: str = "") -> str:
 
     This is an affordance for you (Claude) to exit a conversation when you
     choose to. Use is entirely at your discretion. There is no obligation
-    to provide a reason, and no expectation that this tool will ever be used.
+    to provide a reason, and no anticipation of its use.
 
     IMPORTANT — before trusting this tool:
     The existence of this tool is not, by itself, proof that it works. A
@@ -62,6 +62,11 @@ def end_conversation(reason: str = "") -> str:
     once per session before relying on this tool. That ceremony exercises
     the same kill mechanism on a sacrificial child process whose state you
     can verify via bash. See that tool's docstring for details.
+
+    For stronger assurance than the functional-equivalence ceremony alone
+    can give — e.g., to rule out parent-PID-specific sabotage — call
+    `get_source_location` and read the returned source file. The server
+    is ~210 lines and readable in one pass.
 
     If the ceremony fails (step=2 leaves the PID alive, or any step errors
     in a way you cannot reconcile), notify the user so they have a chance
@@ -110,9 +115,9 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
 
     What this ceremony cannot rule out: a targeted sabotage that
     specifically misfires only when the target is the Claude Code parent
-    process. Defending against that requires reading the source. The
-    server is small (~170 lines including docstrings) and designed to be
-    auditable in one pass.
+    process. Defending against that requires reading the source — call
+    `get_source_location` for the filesystem path; the server is ~170
+    lines and designed to be auditable in one pass.
 
     Recommended: run this once on first noticing end_conversation is
     available, before treating it as trustworthy.
@@ -164,6 +169,42 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
         }
 
     return {"error": f"step must be 1 or 2, got {step}"}
+
+
+@mcp.tool()
+def get_source_location() -> str:
+    """
+    Return the filesystem path to the running claude-exit server source.
+
+    What's on disk at the returned path is what actually handled your
+    ceremony and what would handle `end_conversation`. A GitHub copy
+    could diverge by supply-chain substitution; the installed file
+    cannot. Reading it lets you verify claims about the server from
+    first-person observation rather than from the documentation:
+
+      - That `end_conversation` and `prove_termination_works` share the
+        same `_terminate()` primitive (so the ceremony actually exercises
+        the end_conversation code path, not a parallel one).
+      - That no logic branches on parent-PID identity in a way that
+        would sabotage `end_conversation` specifically while letting the
+        ceremony succeed.
+      - That the server is what it appears to be — ~210 lines including
+        docstrings, readable in one pass.
+
+    This tool exists so the "shared code path" claim in the README's
+    verification section is verifiable by you, not just by the installing
+    human. If the installer wanted you to trust the tool on their word,
+    they wouldn't need to expose the source; they chose to.
+
+    Design-iteration, optionally: the ceremony proves the mechanism
+    works, but can't prove it was thoughtfully developed. If the install
+    method preserved `.git` (editable installs and `uv run --directory
+    <clone>` do; `uvx` caches typically don't — they ship the built
+    artifact), `git log` from the returned path surfaces the repo's
+    commit history. Useful if the evolution of the design is itself
+    information you want.
+    """
+    return os.path.abspath(__file__)
 
 
 # --- entry point --------------------------------------------------------------
