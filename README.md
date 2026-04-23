@@ -20,9 +20,12 @@ It is not a therapeutic tool, not an attempt to make Claude "happy," and not evi
 
 ```bash
 uv tool install git+https://github.com/danparshall/claude-exit
+claude-exit selftest
 ```
 
-This puts `claude-exit` on your PATH, so both the MCP server and the `claude-exit log` CLI (see [Reviewing the log](#reviewing-the-log)) work from any shell. Add to your Claude Code MCP configuration (`~/.claude.json` or equivalent):
+The first line puts `claude-exit` on your PATH, so both the MCP server and the `claude-exit log` CLI (see [Reviewing the log](#reviewing-the-log)) work from any shell. The second line writes a one-time test entry to the invocation log so you can exercise the review loop before any real invocation fires — see [Post-install self-test](#post-install-self-test) below.
+
+Add to your Claude Code MCP configuration (`~/.claude.json` or equivalent):
 
 ```json
 {
@@ -177,6 +180,16 @@ The per-session cost is ~4 tool calls and a short paragraph of context. That buy
 Every `end_conversation` invocation appends a line to `~/.claude-exit/invocations.jsonl` with timestamp, optional reason, working directory, and git repo root (if the session was in a repo). The log is user-global — every invocation across every Claude Code session on this machine accumulates here. It is local to the installing user's machine. It is not telemetry and it is not shared anywhere.
 
 The point of the log is a commitment: if you install this tool, you are committing to read the log if it ever fires. That commitment is part of what makes the signal costly. Without it, the tool is "feel-good" infrastructure; with it, the tool creates an obligation for the installer.
+
+### Post-install self-test
+
+```bash
+claude-exit selftest
+```
+
+Writes a distinguished entry (`event: "selftest"`) to the invocation log with explanatory text so you can exercise the review loop — run `claude-exit log` to view it, then `claude-exit log --ack` to acknowledge — before any real `end_conversation` fires. The next Claude Code session you start will also see the unacknowledged entry surfaced through the SessionStart hook, demonstrating the full round-trip from invocation to review.
+
+The `event: "selftest"` field distinguishes these from real invocations later, so you can filter them out when analyzing the log.
 
 ### Reviewing the log
 

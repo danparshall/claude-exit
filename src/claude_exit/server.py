@@ -264,10 +264,15 @@ def get_source_location() -> str:
 # --- entry point --------------------------------------------------------------
 
 def main() -> None:
-    if len(sys.argv) > 1 and sys.argv[1] == "log":
-        from .cli import log_command
-        log_command(sys.argv[2:])
-        return
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "log":
+            from .cli import log_command
+            log_command(sys.argv[2:])
+            return
+        if sys.argv[1] == "selftest":
+            from .cli import selftest
+            selftest()
+            return
     mcp.run()
 
 

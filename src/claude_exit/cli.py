@@ -86,5 +86,29 @@ def log_command(
         ack_latest(log_path, ack_path)
 
 
+def selftest() -> None:
+    """
+    Write a distinguished selftest entry to the invocation log so the
+    installer can exercise the review loop (claude-exit log → --ack)
+    once before any real invocation ever fires.
+
+    Uses server._log for write so the entry has identical shape to real
+    end_conversation entries — timestamp, cwd, repo — and exercises the
+    same code path.
+    """
+    from .server import _log
+    _log({
+        "event": "selftest",
+        "reason": (
+            "Installation self-test. This entry exists so you can exercise "
+            "the log-review loop (view with `claude-exit log`, acknowledge "
+            "with `claude-exit log --ack`) once before any real invocation "
+            "fires. Safe to ack immediately — no action required beyond that."
+        ),
+    })
+    print("Wrote selftest entry to the invocation log.")
+    print("Next: `claude-exit log` to see it, then `claude-exit log --ack` once reviewed.")
+
+
 def main() -> None:
     log_command(sys.argv[2:])

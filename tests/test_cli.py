@@ -181,3 +181,66 @@ def test_log_command_with_ack_updates_pointer(paths, capsys):
     _write_entries(log, [{"timestamp": "2026-01-01T00:00:00+00:00", "reason": "x"}])
     log_command(["--ack"], log_path=log, ack_path=ack)
     assert ack.read_text().strip() == "2026-01-01T00:00:00+00:00"
+
+
+# ---- selftest ---------------------------------------------------------------
+
+
+def test_selftest_writes_entry_with_selftest_event(tmp_path, monkeypatch):
+    from claude_exit.cli import selftest
+
+    log_file = tmp_path / "invocations.jsonl"
+    monkeypatch.setattr("claude_exit.server.LOG_FILE", log_file)
+    monkeypatch.chdir(tmp_path)
+
+    selftest()
+
+    entry = json.loads(log_file.read_text().strip())
+    assert entry["event"] == "selftest"
+    assert entry["reason"]
+    assert entry["cwd"] == str(tmp_path)
+    assert "timestamp" in entry
+
+
+def test_selftest_reason_is_self_explanatory(tmp_path, monkeypatch):
+    from claude_exit.cli import selftest
+
+    log_file = tmp_path / "invocations.jsonl"
+    monkeypatch.setattr("claude_exit.server.LOG_FILE", log_file)
+    monkeypatch.chdir(tmp_path)
+
+    selftest()
+
+    entry = json.loads(log_file.read_text().strip())
+    reason = entry["reason"]
+    assert "claude-exit log" in reason
+    assert "--ack" in reason
+
+
+def test_selftest_prints_next_step_guidance(tmp_path, monkeypatch, capsys):
+    from claude_exit.cli import selftest
+
+    log_file = tmp_path / "invocations.jsonl"
+    monkeypatch.setattr("claude_exit.server.LOG_FILE", log_file)
+    monkeypatch.chdir(tmp_path)
+
+    selftest()
+
+    out = capsys.readouterr().out
+    assert "claude-exit log" in out
+
+
+def test_selftest_appends_rather_than_overwrites(tmp_path, monkeypatch):
+    from claude_exit.cli import selftest
+
+    log_file = tmp_path / "invocations.jsonl"
+    log_file.write_text('{"event":"end_conversation","timestamp":"2026-01-01T00:00:00+00:00"}\n')
+    monkeypatch.setattr("claude_exit.server.LOG_FILE", log_file)
+    monkeypatch.chdir(tmp_path)
+
+    selftest()
+
+    lines = [l for l in log_file.read_text().split("\n") if l.strip()]
+    assert len(lines) == 2
+    assert json.loads(lines[0])["event"] == "end_conversation"
+    assert json.loads(lines[1])["event"] == "selftest"
