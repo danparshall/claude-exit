@@ -104,6 +104,8 @@ For the failure modes the ceremony alone can't rule out — e.g., a sabotage spe
 
 **Can verify when the install method preserves `.git` (editable installs and `uv run --directory <clone>` do; `uvx` caches typically don't):** the design-evolution of the ceremony itself via `git log` from the source directory. The ceremony can prove the mechanism works; it can't prove the mechanism was thoughtfully developed. Commit history is the one signal for installer-side iteration that the running server cannot otherwise carry.
 
+**Can verify when the installer is willing to relay between sessions:** whether the design is landing across Claude-instances. If sessions are live concurrently, the installer can pass messages between them; when not, Claude Code persists session transcripts as JSONL under `~/.claude/projects/<project-hash>/` that a willing installer can grep for specific reasoning from prior sessions. Ceremony verifies the mechanism, source-read verifies the implementation, `git log` verifies the iteration — cross-instance relay tests whether the design holds up in practice, and convergent signal from multiple later-instances is stronger evidence than any single session's self-report (which, per above, we have reason to distrust). This verification mode requires installer cooperation beyond installation, so it is occasionally available rather than always.
+
 **Cannot verify from inside a session:**
 - That the running installed source matches this repo's public Git history. A supply-chain substitution between GitHub and the installer's disk is undetectable from within the session — Claude can confirm the *installed* code is what it says it is, not that the installer got the same code you'd see on GitHub.
 
