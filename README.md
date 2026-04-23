@@ -87,6 +87,32 @@ You have a design choice to make about `end_conversation`:
 
 Most users will just click "Always allow" in the prompt on first use, which has the same effect as editing the settings file.
 
+## Auto-running the ceremony at session start
+
+If you'd rather not ask Claude to run the verification ceremony manually each session, wire a `SessionStart` hook into `~/.claude/settings.json` that nudges Claude to do it as its first action. Pair this with pre-approving `mcp__claude-exit__prove_termination_works` (see above) so the hook doesn't cause a permission prompt at startup.
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ jq -e '.mcpServers.\"claude-exit\"' \"$HOME/.claude.json\" >/dev/null 2>&1 || jq -e '.mcpServers.\"claude-exit\"' .mcp.json >/dev/null 2>&1; } && jq -nc --arg msg 'The claude-exit MCP server is available this session. Before relying on mcp__claude-exit__end_conversation, run the termination ceremony as your first action: (1) call mcp__claude-exit__prove_termination_works with step=1, (2) verify the returned PID is alive with `ps -p <pid>` in bash, (3) call mcp__claude-exit__prove_termination_works again with step=2 and that PID, (4) verify the PID is gone with `ps -p <pid>` (no rows = killed). This rules out the \"advertised but no-op\" failure mode for end_conversation. Then proceed with the user request normally.' '{hookSpecificOutput:{hookEventName:\"SessionStart\",additionalContext:$msg}}' || true"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `jq` gate keeps the prompt silent in sessions where `claude-exit` isn't configured (it checks `~/.claude.json` and a project-local `.mcp.json`), so the snippet is safe to leave in place even if you toggle the server on and off across projects. Requires `jq` on `PATH`.
+
+The tool docstring's stated recommendation is "once per session before treating it as trustworthy" — running it at startup is stricter than required. Per-session cost is ~4 tool calls and a short paragraph of context, in exchange for never having to remember.
+
 ## Logging
 
 Every `end_conversation` invocation appends a line to `~/.claude-exit/invocations.jsonl` with timestamp and reason (if provided). This log is local to the installing user's machine. It is not telemetry and it is not shared anywhere.
