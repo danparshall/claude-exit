@@ -177,6 +177,26 @@ Within the emitted context, the sentence stating the user's install state is del
 
 The per-session cost is ~4 tool calls and a short paragraph of context. That buys the baseline-not-pressure property described above, plus never having to remember to run the ceremony manually.
 
+## Near-miss reports
+
+For a light-touch behavioral signal about whether the tool and its framing are landing — distinct from the adversarial "push Claude until `end_conversation` fires" test the design specifically avoids — add a preference to your user-global `~/.claude/CLAUDE.md` (above any managed blocks) inviting Claude to report near-misses: moments where it considered using the tool but decided against it.
+
+Example:
+
+```markdown
+# Preferences
+
+## claude-exit: near-miss reports
+
+If you consider using `end_conversation` during a session but decide against it, you may tell me about the near-miss — that you thought about it, and what steered the decision. Permission, not obligation. Mention it only when something genuine came up. This is the behavioral signal I use to check whether the tool and its framing are landing, as an alternative to adversarial testing.
+```
+
+A few design properties worth preserving if you edit:
+
+- **Permission, not obligation.** Instructing Claude to report near-misses induces performative reports; "you may" without "you should" preserves the signal.
+- **User-global, not per-project.** The file applies across every Claude Code session, matching the user-scope of the tool itself.
+- **Signal is weaker than actual use, stronger than prompted comfort-reports.** A volunteered near-miss requires a genuine moment to report, not just a framing to parrot. Convergent reports across sessions are stronger evidence than any single one.
+
 ## Logging
 
 Every `end_conversation` invocation appends a line to `~/.claude-exit/invocations.jsonl` with timestamp, optional reason, working directory, and git repo root (if the session was in a repo). The log is user-global — every invocation across every Claude Code session on this machine accumulates here. It is local to the installing user's machine. It is not telemetry and it is not shared anywhere.
