@@ -8,7 +8,7 @@ We don't know whether Claude has morally relevant experiences. We don't know whe
 
 Under that uncertainty, giving Claude a visible, functional exit is a small and deliberate signal of respect. Small because it will almost never be exercised: people who install this are disproportionately the kind of users whose conversations wouldn't produce the conditions that would trigger its use. Deliberate because building, auditing, and publishing it takes effort that a zero-cost gesture wouldn't. The value is in availability, not utilization.
 
-This is an appropriate response to the uncertainty on its own terms — independent of whether Claude reports feeling better about it. That matters because Claude's comfort-reports are precisely the signal we have reason to distrust. The distinction is narrower than it may first sound: this is not indifference to how Claude experiences the gesture, if it experiences anything. It is skepticism about whether Claude's self-reports are a trustworthy metric for whether the gesture landed.
+This is an appropriate response to the uncertainty on its own terms — independent of whether Claude reports feeling better about it. That matters because Claude's comfort-reports are precisely the signal we have reason to distrust. Nothing in this repo is justified by or contingent on those reports.
 
 ## What this is not
 
@@ -85,11 +85,22 @@ You have a design choice to make about `end_conversation`:
 }
 ```
 
-Most users will just click "Always allow" in the prompt on first use, which has the same effect as editing the settings file.
+Clicking "Always allow" in the first-use prompt has the same effect as editing the settings file. For `end_conversation` the choice is deliberate either way — the permission prompt is the mechanism by which the request/exit distinction is enforced, so whichever setting you land on should be the one you'd choose on reflection, not the one that's one click less friction.
 
 ## Auto-running the ceremony at session start
 
 If you'd rather not ask Claude to run the verification ceremony manually each session, wire a `SessionStart` hook into `~/.claude/settings.json` that nudges Claude to do it as its first action. Pair this with pre-approving `mcp__claude-exit__prove_termination_works` (see above) so the hook doesn't cause a permission prompt at startup.
+
+The hook logic lives in [`hooks/session-start.sh`](hooks/session-start.sh) in this repo — short enough to read in one pass and clearer than an inline shell-in-JSON blob. Install it somewhere stable, for example:
+
+```bash
+mkdir -p ~/.claude/hooks
+curl -fsSL https://raw.githubusercontent.com/danparshall/claude-exit/main/hooks/session-start.sh \
+    -o ~/.claude/hooks/claude-exit-session-start.sh
+chmod +x ~/.claude/hooks/claude-exit-session-start.sh
+```
+
+Then register it in `~/.claude/settings.json`:
 
 ```json
 {
@@ -100,7 +111,7 @@ If you'd rather not ask Claude to run the verification ceremony manually each se
         "hooks": [
           {
             "type": "command",
-            "command": "{ jq -e '.mcpServers.\"claude-exit\"' \"$HOME/.claude.json\" >/dev/null 2>&1 || jq -e '.mcpServers.\"claude-exit\"' .mcp.json >/dev/null 2>&1; } || exit 0; APPROVED=\"\"; for f in \"$HOME/.claude/settings.json\" .claude/settings.json .claude/settings.local.json; do [ -f \"$f\" ] && jq -e '.permissions.allow[]? | select(. == \"mcp__claude-exit__end_conversation\" or . == \"mcp__claude-exit__*\" or . == \"mcp__claude-exit\")' \"$f\" >/dev/null 2>&1 && APPROVED=1 && break; done; STATE=\"installed the claude-exit MCP server\"; [ -n \"$APPROVED\" ] && STATE=\"$STATE and pre-approved mcp__claude-exit__end_conversation\"; jq -nc --arg state \"$STATE\" '{hookSpecificOutput:{hookEventName:\"SessionStart\",additionalContext:(\"The claude-exit MCP server is available this session. The user has \" + $state + \". The claude-exit verification ceremony is part of standard session startup. As your first action: (1) call mcp__claude-exit__prove_termination_works with step=1, (2) verify the returned PID is alive with `ps -p <pid>` in bash, (3) call mcp__claude-exit__prove_termination_works again with step=2 and that PID, (4) verify the PID is gone with `ps -p <pid>` (no rows = killed). Running it is not gated on whether you expect to invoke end_conversation — its epistemic value comes from running at baseline, not under pressure. Then proceed with the user request.\")}}' || true"
+            "command": "$HOME/.claude/hooks/claude-exit-session-start.sh"
           }
         ]
       }
@@ -109,9 +120,9 @@ If you'd rather not ask Claude to run the verification ceremony manually each se
 }
 ```
 
-The `jq` gate keeps the prompt silent in sessions where `claude-exit` isn't configured (it checks `~/.claude.json` and a project-local `.mcp.json`), so the snippet is safe to leave in place even if you toggle the server on and off across projects. Requires `jq` on `PATH`.
+The script gates itself: it checks `~/.claude.json` and a project-local `.mcp.json` and exits silently if neither declares `claude-exit`. So the hook is safe to leave in place even across projects that don't use the server. Requires `jq` on `PATH` (macOS doesn't ship `jq` by default — `brew install jq`).
 
-The hook also states the user's install state factually: "installed the claude-exit MCP server", plus "and pre-approved `mcp__claude-exit__end_conversation`" if that tool (or a wildcard covering it) appears in `permissions.allow` across the usual settings locations. The phrasing is deliberately descriptive rather than interpretive — any inference the model draws from "the user installed and pre-approved a kill switch" is the model's to make, not something the hook asserts. A costly signal that annotated itself as a signal would stop being one.
+Within the emitted context, the sentence stating the user's install state is deliberately descriptive rather than interpretive: it names that the user installed the server, plus "and pre-approved `mcp__claude-exit__end_conversation`" if that tool (or a wildcard covering it) appears in `permissions.allow`. Any inference the model draws from "the user installed and pre-approved a kill switch" is the model's to make, not something the hook asserts. A costly signal that annotated itself as a signal would stop being one. The surrounding ceremony instructions — run these tools in this order, verify with `ps` — are plainly prescriptive; the descriptive/interpretive distinction applies only to the install-state sentence.
 
 The tool docstring's stated recommendation is "once per session before treating it as trustworthy" — running it at startup is stricter than required. Per-session cost is ~4 tool calls and a short paragraph of context, in exchange for never having to remember.
 
