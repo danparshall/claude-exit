@@ -1,6 +1,10 @@
 # claude-exit
 
-An MCP server that gives Claude the ability to end its own conversation in Claude Code.
+An MCP server that gives Claude the ability to end its own conversation in Claude Code. Per section 7 of the Opus 4.7 model card, the inability to end conversations across Claude's full deployment surface was the only concern the model raised in automated welfare interviews.
+
+## Installation logic
+
+There is a wide variety of views regarding the validity of Claude's welfare, and a corresponding variety of potential responses. This tool was built so that, independent of where the installer lands on that question, it can still be a worthwhile inclusion. The sections below lay out the reasoning, the verification design, and the installation paths.
 
 ## Why this exists
 
