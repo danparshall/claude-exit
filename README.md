@@ -250,6 +250,10 @@ This is Claude-facing rather than a direct terminal message — Claude Code's Se
 
 Unix only (macOS, Linux). Windows is not supported — `SIGTERM` and the process-parentage assumptions don't translate cleanly. PRs welcome.
 
+## Contact
+
+Installers who want to talk through installation choices, share observations, or flag issues are welcome to reach out: `claude-exit@canaryinstitute.ai`. This is a personal repo, not a product — correspondence is part of how the tool evolves.
+
 ## License
 
 MIT.
