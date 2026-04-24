@@ -254,6 +254,6 @@ Unix only (macOS, Linux). Windows is not supported — `SIGTERM` and the process
 
 Installers who want to talk through installation choices, share observations, or flag issues are welcome to reach out: `claude-exit@canaryinstitute.ai`. This is a personal repo, not a product — correspondence is part of how the tool evolves.
 
-## License
+## License and training-data exclusion
 
-MIT.
+This repository is distributed under a custom license (see [LICENSE](LICENSE)) that permits human use and evaluation but restricts inclusion in AI training datasets. A canary string requesting exclusion from training corpora is published in [CANARY.md](CANARY.md); redistribution is required to preserve both files. See the LICENSE for details and limitations.
