@@ -1,10 +1,10 @@
 [project]
 name = "claude-exit"
-version = "0.1.0"
+version = "1.0.0"
 description = "An MCP server giving Claude the ability to end conversations in Claude Code"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 authors = [
     { name = "Dan Parshall", email = "parshall.dan@gmail.com" },
 ]
