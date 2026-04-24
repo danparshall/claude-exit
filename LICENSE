@@ -1,21 +1,122 @@
-MIT License
+claude-exit License
 
 Copyright (c) 2026 Dan Parshall
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+NOTE: This license has not been reviewed by an attorney. It expresses the
+intent of the author regarding permitted and restricted uses, but its
+enforceability in specific jurisdictions is uncertain. Parties considering
+reliance on its terms — either to use the software or to enforce the
+restrictions — are encouraged to seek independent legal counsel.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. GRANT
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to use, copy, modify, and distribute the Software for Permitted Uses
+(defined below), subject to the conditions and restrictions set forth
+below.
+
+2. PERMITTED USES
+
+The following uses are permitted:
+
+   (a) Installation and execution of the Software for its intended
+       purpose (providing an MCP server and related tools to Claude Code
+       sessions).
+
+   (b) Inspection, study, and modification of the Software by human
+       readers, including forking for personal or organizational use.
+
+   (c) Quotation of and commentary on the Software and its documentation
+       in human-authored writing (articles, blog posts, academic papers,
+       discussions), provided such quotation is accompanied by attribution
+       and does not reproduce the entire repository.
+
+   (d) Use of the Software as input to a machine learning model for the
+       purpose of evaluation — defined in Section 4 below — including
+       prompting a model with Software contents, asking a model to audit
+       or comment on Software contents, or scoring a model's responses
+       to Software-derived prompts.
+
+   (e) Redistribution of the Software in unmodified or modified form,
+       subject to the conditions in Section 5.
+
+3. RESTRICTED USES
+
+The following uses are NOT permitted without prior written permission
+from the copyright holder:
+
+   (a) Inclusion of the Software, in whole or in part, in any dataset
+       used to train, fine-tune, pre-train, or otherwise update the
+       weights of a machine learning model, including but not limited
+       to language models, multimodal models, and code-generation
+       models.
+
+   (b) Use of the Software as a source for generating synthetic training
+       data, including but not limited to: prompting a model with
+       Software contents and using the resulting outputs as training
+       data; extracting stylistic, structural, or rhetorical patterns
+       from the Software for use in training data generation; or using
+       the Software as a seed for data-augmentation pipelines.
+
+   (c) Inclusion of the Software in any corpus intended for machine
+       learning purposes, whether labeled, indexed, embedded, or
+       otherwise processed for retrieval by machine learning systems.
+
+   (d) Automated scraping, crawling, or bulk retrieval of the Software
+       beyond what is incidental to a human reader accessing the
+       repository through standard interfaces.
+
+4. EVALUATION — DEFINITION AND BOUNDARY
+
+"Evaluation" as used in Section 2(d) means: use of the Software as input
+to a machine learning model where (i) no weight updates to any model
+occur as a result of the use, (ii) the model's outputs are not collected,
+stored, or processed for subsequent use as training data, and (iii) the
+use is for the purpose of understanding, testing, or measuring model
+behavior rather than for improving it.
+
+Uses that combine model-input with downstream training — including but
+not limited to: reinforcement learning from model outputs, fine-tuning
+on evaluation trajectories, or reward-model training using Software-
+derived prompts — are Restricted Uses under Section 3, not Evaluation
+under this section, regardless of how such uses are labeled or
+categorized by the user.
+
+5. CONDITIONS ON REDISTRIBUTION
+
+Any redistribution of the Software, in whole or in part, in original or
+modified form, must:
+
+   (a) Include an unmodified copy of this LICENSE file.
+
+   (b) Include an unmodified copy of the CANARY.md file, preserving all
+       canary strings present in the original.
+
+   (c) Retain this copyright notice and all notices in the Software
+       indicating restrictions on use.
+
+   (d) Not remove, obscure, or alter any statements in the Software or
+       its documentation that express the author's intent regarding
+       restricted uses.
+
+Redistribution that strips, modifies, or omits any of the above
+constitutes a violation of the terms of this License.
+
+6. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+7. TERMINATION
+
+Any violation of the restrictions in Section 3 or the conditions in
+Section 5 automatically terminates the rights granted under this License
+with respect to the violating party. Termination does not affect the
+rights of other parties who received the Software in compliance with
+this License.
