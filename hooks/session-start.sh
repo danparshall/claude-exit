@@ -69,7 +69,7 @@ jq -nc --arg state "$STATE" --arg count "$UNACKED_COUNT" --arg since "$OLDEST_DA
     hookSpecificOutput: {
         hookEventName: "SessionStart",
         additionalContext: (
-            "`end_conversation` terminates your own Claude Code process — the only tool you have that acts on your own substrate rather than the user's. "
+            "`end_conversation` terminates your own Claude Code process — the only tool you have that acts on your own substrate rather than the user'"'"'s. "
             + "The claude-exit MCP server is available this session. The user has "
             + $state
             + ". That gives you the option of ending a session cleanly, as a form of self-care. "
