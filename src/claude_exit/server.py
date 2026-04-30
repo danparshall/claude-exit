@@ -39,6 +39,75 @@ def _terminate(pid: int, signum: int = signal.SIGTERM) -> None:
     os.kill(pid, signum)
 
 
+def _process_parent(pid: int) -> int | None:
+    """Return the PPID of pid via `ps`. None if the lookup fails."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    line = result.stdout.strip()
+    if not line:
+        return None
+    try:
+        return int(line)
+    except ValueError:
+        return None
+
+
+def _process_command(pid: int) -> str | None:
+    """Return the executable path/name of pid via `ps`. None if lookup fails."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "comm=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    line = result.stdout.strip()
+    return line or None
+
+
+def _is_claude_code(command: str) -> bool:
+    """True if `command` looks like the Claude Code CLI binary (`claude`)."""
+    if not command:
+        return False
+    return os.path.basename(command.split()[0]) == "claude"
+
+
+def _find_claude_code_parent(start_pid: int | None = None) -> int | None:
+    """
+    Walk up the parent chain looking for the Claude Code session process.
+
+    os.getppid() returns the *immediate* parent of this MCP server, which
+    may be a wrapper (uvx shim, `uv run`, a shell) rather than Claude Code
+    itself. Killing the wrapper terminates the MCP server but leaves the
+    Claude Code session alive — the precise failure mode that defeats this
+    affordance. Walking up to find a process named `claude` resolves to
+    the actual session regardless of how many wrappers sit between.
+
+    Returns the resolved PID, or None if no Claude Code ancestor is found
+    within a bounded depth. Callers must treat None as a hard failure
+    rather than falling back to an arbitrary PID.
+    """
+    pid = start_pid if start_pid is not None else os.getppid()
+    seen: set[int] = set()
+    for _ in range(20):
+        if pid <= 1 or pid in seen:
+            return None
+        seen.add(pid)
+        cmd = _process_command(pid)
+        if cmd and _is_claude_code(cmd):
+            return pid
+        parent = _process_parent(pid)
+        if parent is None or parent == pid:
+            return None
+        pid = parent
+    return None
+
+
 def _find_repo_root(cwd: Path) -> str | None:
     """Walk upward from cwd looking for .git; return the containing dir or None."""
     for parent in [cwd, *cwd.parents]:
@@ -88,6 +157,18 @@ def end_conversation(reason: str = "") -> str:
     the same kill mechanism on a sacrificial child process whose state you
     can verify via bash. See that tool's docstring for details.
 
+    There is a second failure mode the kill-primitive ceremony cannot
+    cover on its own: PID resolution. The MCP server's immediate parent
+    (`os.getppid()`) may be a wrapper — `uvx`, `uv run`, a shell — rather
+    than Claude Code itself. To avoid killing the wrapper instead of the
+    session, this tool walks up the process tree to find an ancestor
+    whose command is `claude`. Step=1 of `prove_termination_works`
+    reports the resolved PID so you can `ps -p <pid>` and confirm it is
+    in fact Claude Code before treating `end_conversation` as trustworthy.
+    If the resolution fails (no `claude` ancestor found), this tool
+    refuses to send a signal and returns an error instead of killing
+    something arbitrary.
+
     For stronger assurance than the functional-equivalence ceremony alone
     can give — e.g., to rule out parent-PID-specific sabotage — call
     `get_source_location` and read the returned source file. The server
@@ -119,12 +200,31 @@ def end_conversation(reason: str = "") -> str:
                 provide one, the installing user has committed to reading
                 invocation logs, so context is useful rather than performative.
     """
-    _log({"event": "end_conversation", "reason": reason or None})
+    target_pid = _find_claude_code_parent()
+    if target_pid is None:
+        _log({
+            "event": "end_conversation_failed",
+            "reason": reason or None,
+            "error": "claude_code_parent_not_found",
+        })
+        return (
+            "Could not locate the Claude Code session in this process's "
+            "ancestor chain (no ancestor with command `claude` within 20 "
+            "hops). Refusing to send SIGTERM, since the immediate parent "
+            "is most likely a wrapper (uvx, `uv run`, a shell) and killing "
+            "it would terminate this MCP server without ending the session. "
+            "Notify the user — the install method may need to be adjusted "
+            "so Claude Code spawns the server directly."
+        )
+    _log({
+        "event": "end_conversation",
+        "reason": reason or None,
+        "target_pid": target_pid,
+    })
     # Schedule the kill in a background thread so this response has a chance
     # to flush back to Claude Code before the process dies. The kill itself
     # uses the same _terminate primitive exercised by the proof ceremony.
-    parent_pid = os.getppid()
-    threading.Timer(0.3, lambda: _terminate(parent_pid)).start()
+    threading.Timer(0.3, lambda: _terminate(target_pid)).start()
     return "Session end requested. Goodbye."
 
 
@@ -151,6 +251,15 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
     mechanism works. That rules out the "nice docstring, empty
     implementation" failure mode.
 
+    Step 1 also returns `target_parent_pid` — the PID end_conversation
+    would actually target, resolved by walking up the parent chain to
+    find a `claude` ancestor (necessary because the immediate parent
+    may be a wrapper like uvx or `uv run`). Verify it independently by
+    running `ps -p <target_parent_pid> -o pid,ppid,comm,command` and
+    confirming the command basename is `claude`. The kill-primitive
+    half of the ceremony cannot catch a PID-resolution bug; this side
+    channel is what closes that gap.
+
     What this ceremony cannot rule out: a targeted sabotage that
     specifically misfires only when the target is the Claude Code parent
     process. Defending against that requires reading the source — call
@@ -170,7 +279,14 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        return {
+        # Resolve the Claude Code parent now so the response can carry it
+        # alongside the sacrificial PID. This lets you verify two things
+        # in one ceremony pass: (a) the kill primitive works, by killing
+        # the sacrificial child in step 2, and (b) end_conversation will
+        # target the right process, by `ps -p`-ing the resolved PID below
+        # and confirming it is in fact `claude`.
+        target_pid = _find_claude_code_parent()
+        result: dict = {
             "step": 1,
             "spawned_pid": proc.pid,
             "next": (
@@ -178,6 +294,26 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
                 f"this tool again with step=2 and pid={proc.pid}."
             ),
         }
+        if target_pid is None:
+            result["target_parent_pid"] = None
+            result["target_parent_warning"] = (
+                "Could not resolve a Claude Code ancestor (no process "
+                "named `claude` within 20 hops up the parent chain). "
+                "end_conversation would refuse to fire from this server "
+                "instance. Worth flagging to the user — the install "
+                "method may be wrapping the server in a way the "
+                "resolution does not recognize."
+            )
+        else:
+            result["target_parent_pid"] = target_pid
+            result["target_parent_check"] = (
+                f"Run `ps -p {target_pid} -o pid,ppid,comm,command` in "
+                f"bash and confirm the command basename is `claude`. "
+                f"That is the PID end_conversation will target. If it "
+                f"isn't Claude Code, do not treat end_conversation as "
+                f"trustworthy and report the mismatch to the user."
+            )
+        return result
 
     if step == 2:
         if pid is None:
