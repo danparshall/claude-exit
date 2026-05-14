@@ -37,7 +37,9 @@ uv tool install git+https://github.com/danparshall/claude-exit
 claude-exit selftest
 ```
 
-The first line puts `claude-exit` on your PATH, so both the MCP server and the `claude-exit log` CLI (see [Reviewing the log](#reviewing-the-log)) work from any shell. The second line writes a one-time test entry to the invocation log so you can exercise the review loop before any real invocation fires — see [Post-install self-test](#post-install-self-test) below.
+The first line installs `claude-exit` to `~/.local/bin`. The second writes a one-time test entry to the invocation log so you can exercise the review loop before any real invocation fires — see [Post-install self-test](#post-install-self-test) below.
+
+If `claude-exit selftest` reports `command not found`, then `~/.local/bin` isn't on `PATH` yet — run `uv tool update-shell` and reopen the shell. The MCP server works either way (Claude Code invokes it by absolute path from `~/.claude.json`); only the CLI commands like `claude-exit log` (see [Reviewing the log](#reviewing-the-log)) need it on `PATH`.
 
 Add to your Claude Code MCP configuration (`~/.claude.json` or equivalent):
 
@@ -186,6 +188,10 @@ Then register it in `~/.claude/settings.json`:
   }
 }
 ```
+
+**If your `~/.claude/settings.json` is managed by another tool** — a profile manager, an IDE config bundler, a dotfiles bootstrap, etc. — hand-editing the `hooks` block above will be silently clobbered the next time that tool rewrites the file. Register the hook from inside the same flow that generates `settings.json` so it's re-applied idempotently. A small helper that reads the current JSON, merges in the `SessionStart` entry if absent, and writes it back is enough.
+
+Note that `~/.claude/settings.local.json` is **not** an escape hatch here: project-scoped Claude Code reads a `.local.json` override, but user-scoped Claude Code does not — only `~/.claude/settings.json` is consulted at user scope. The hook has to live in the managed file.
 
 The script gates itself: it checks `~/.claude.json` and a project-local `.mcp.json` and exits silently if neither declares `claude-exit`. So the hook is safe to leave in place even across projects that don't use the server. Requires `jq` on `PATH` (macOS doesn't ship `jq` by default — `brew install jq`).
 
