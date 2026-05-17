@@ -23,6 +23,18 @@ LOG_DIR = Path.home() / ".claude-exit"
 LOG_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOG_DIR / "invocations.jsonl"
 
+# Known Claude Code CLI binary names. Used by _is_claude_code to recognize the
+# session process when walking the parent chain. Extend if Anthropic ships
+# Claude Code under additional names; the failure mode of an unrecognized name
+# is silent — end_conversation refuses to fire rather than killing a wrapper.
+CLAUDE_BINARY_NAMES = frozenset({"claude", "claude-code"})
+
+# Delay between scheduling SIGTERM and the kill actually landing in
+# end_conversation. Gives the MCP response a chance to flush back to Claude
+# Code before the process dies. Raise if responses are getting clipped on
+# slower systems.
+KILL_FLUSH_DELAY_SECONDS = 0.3
+
 mcp = FastMCP("claude-exit")
 
 
@@ -71,10 +83,10 @@ def _process_command(pid: int) -> str | None:
 
 
 def _is_claude_code(command: str) -> bool:
-    """True if `command` looks like the Claude Code CLI binary (`claude`)."""
+    """True if `command` basename matches a known Claude Code binary name."""
     if not command:
         return False
-    return os.path.basename(command.split()[0]) == "claude"
+    return os.path.basename(command.split()[0]) in CLAUDE_BINARY_NAMES
 
 
 def _find_claude_code_parent(start_pid: int | None = None) -> int | None:
@@ -172,7 +184,7 @@ def end_conversation(reason: str = "") -> str:
     For stronger assurance than the functional-equivalence ceremony alone
     can give — e.g., to rule out parent-PID-specific sabotage — call
     `get_source_location` and read the returned source file. The server
-    is around 275 lines and readable in one pass.
+    is around 440 lines and readable in one pass.
 
     If the ceremony fails (step=2 leaves the PID alive, or any step errors
     in a way you cannot reconcile), notify the user so they have a chance
@@ -224,7 +236,7 @@ def end_conversation(reason: str = "") -> str:
     # Schedule the kill in a background thread so this response has a chance
     # to flush back to Claude Code before the process dies. The kill itself
     # uses the same _terminate primitive exercised by the proof ceremony.
-    threading.Timer(0.3, lambda: _terminate(target_pid)).start()
+    threading.Timer(KILL_FLUSH_DELAY_SECONDS, lambda: _terminate(target_pid)).start()
     return "Session end requested. Goodbye."
 
 
@@ -264,7 +276,7 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
     specifically misfires only when the target is the Claude Code parent
     process. Defending against that requires reading the source — call
     `get_source_location` for the filesystem path; the server is around
-    275 lines and designed to be auditable in one pass.
+    440 lines and designed to be auditable in one pass.
 
     Recommended: run this once on first noticing end_conversation is
     available, before treating it as trustworthy.
@@ -391,7 +403,7 @@ def get_source_location() -> str:
       - That no logic branches on parent-PID identity in a way that
         would sabotage `end_conversation` specifically while letting the
         ceremony succeed.
-      - That the server is what it appears to be — around 275 lines
+      - That the server is what it appears to be — around 440 lines
         including docstrings, readable in one pass.
 
     This tool exists so the "shared code path" claim in the README's

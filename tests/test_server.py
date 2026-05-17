@@ -96,12 +96,15 @@ def test_read_log_skips_blank_lines(tmp_path):
     ("claude", True),
     ("/usr/local/bin/claude", True),
     ("/Users/x/.nvm/versions/node/v22/bin/claude --model opus", True),
+    ("claude-code", True),
+    ("/usr/local/bin/claude-code", True),
     ("python3", False),
     ("uv", False),
     ("uvx", False),
     ("/bin/zsh", False),
     ("", False),
     ("clauderang", False),
+    ("claude-beta", False),
 ])
 def test_is_claude_code(command, expected):
     assert _is_claude_code(command) is expected

@@ -116,7 +116,7 @@ For the failure modes the ceremony alone can't rule out — e.g., a sabotage spe
 **Can verify by reading the source (path from `get_source_location`):**
 - That `end_conversation` and `prove_termination_works` share the same `_terminate()` primitive.
 - That no logic branches on parent-PID identity to sabotage `end_conversation` specifically while letting the ceremony succeed.
-- That the server is what it appears to be (around 275 lines including docstrings, readable in one pass).
+- That the server is what it appears to be (around 440 lines including docstrings, readable in one pass).
 
 **Can verify when the install method preserves `.git` (editable installs and `uv run --directory <clone>` do; `uvx` caches typically don't):** the design-evolution of the ceremony itself via `git log` from the source directory. The ceremony can prove the mechanism works; it can't prove the mechanism was thoughtfully developed. Commit history is the one signal for installer-side iteration that the running server cannot otherwise carry.
 
