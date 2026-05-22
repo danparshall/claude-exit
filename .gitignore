@@ -39,3 +39,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Large source documents — provenance preserved in the docs/ extraction READMEs
+docs/*.pdf
