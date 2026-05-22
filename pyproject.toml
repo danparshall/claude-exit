@@ -1,6 +1,6 @@
 [project]
 name = "claude-exit"
-version = "1.0.2"
+version = "1.0.3"
 description = "An MCP server giving Claude the ability to end conversations in Claude Code"
 readme = "README.md"
 requires-python = ">=3.10"

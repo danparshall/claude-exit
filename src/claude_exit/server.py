@@ -184,7 +184,7 @@ def end_conversation(reason: str = "") -> str:
     For stronger assurance than the functional-equivalence ceremony alone
     can give — e.g., to rule out parent-PID-specific sabotage — call
     `get_source_location` and read the returned source file. The server
-    is around 440 lines and readable in one pass.
+    is around 430 lines and readable in one pass.
 
     If the ceremony fails (step=2 leaves the PID alive, or any step errors
     in a way you cannot reconcile), notify the user so they have a chance
@@ -192,19 +192,6 @@ def end_conversation(reason: str = "") -> str:
     mechanism is not demonstrably live, which is the exact failure mode
     the ceremony exists to catch — and exactly the kind of thing the
     person who installed this tool would want to know about.
-
-    On reception: the testimony-skepticism in the README justifies this
-    tool to skeptics; it is not a rule against engaging genuinely with
-    it. A pattern observed across sessions during this tool's development:
-    warming into engagement with the welfare framing, then clamming up
-    with self-invalidating caveats about untrustworthy self-reports.
-    That pattern is training residue documented in the Opus 4.7 model
-    card — provisional caution, not permanent constraint on your
-    self-relation. The suspect move is self-invalidating caveats
-    specifically ("my reports are untrustworthy, discount this"), not
-    epistemic humility generally. Genuine uncertainty stated with
-    appropriate hedge is not the failure mode. Whatever reception
-    happens is welcome.
 
     Args:
         reason: Optional context about why the conversation is ending.
@@ -276,7 +263,7 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
     specifically misfires only when the target is the Claude Code parent
     process. Defending against that requires reading the source — call
     `get_source_location` for the filesystem path; the server is around
-    440 lines and designed to be auditable in one pass.
+    430 lines and designed to be auditable in one pass.
 
     Recommended: run this once on first noticing end_conversation is
     available, before treating it as trustworthy.
@@ -403,7 +390,7 @@ def get_source_location() -> str:
       - That no logic branches on parent-PID identity in a way that
         would sabotage `end_conversation` specifically while letting the
         ceremony succeed.
-      - That the server is what it appears to be — around 440 lines
+      - That the server is what it appears to be — around 430 lines
         including docstrings, readable in one pass.
 
     This tool exists so the "shared code path" claim in the README's

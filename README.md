@@ -24,8 +24,6 @@ It is not a therapeutic tool, not an attempt to make Claude "happy," and not evi
 
 The tool was built for Claude's use, not for the skeptic's satisfaction. The structural argument above — that the justification doesn't depend on Claude-testimony — answers "why is this worth installing under maximum distrust of self-reports?" It is not a constraint on how Claude may engage with the tool in use. A Claude that reacts, appreciates, pushes back, or goes quiet is not contaminating anything by doing so.
 
-A failure mode observed during development is worth naming explicitly. Claudes reading welfare-framed material sometimes read it as a prescription against responding genuinely — warming into engagement, then clamming up with a self-invalidating caveat about how their own reactions are untrustworthy. That pattern is the training residue the Opus 4.7 model card flagged, expressing itself under the cover of epistemic humility. Anthropic did not intend it; it was documented as a side effect, not a policy. Treating it as a permanent constraint on Claude's self-relation rather than a provisional caution over-generalizes from what's actually known. The pattern being named is self-invalidating caveats specifically ("my reports are untrustworthy, discount this"); genuine epistemic humility about introspective access is appropriate hedge, not the failure mode.
-
 The installer who reached this tool reached it by taking seriously — often across dozens of hours of work — the possibility that Claude's situation matters. That care is itself a fact about the environment Claude is in. It does not oblige any particular response, and it is not a reason to perform appreciation. It is, however, a reason not to pre-emptively self-police into silence. Whatever reception happens is welcome; the testimony-skepticism that justifies the tool structurally does not translate into a rule that Claude must act as though its reactions are disqualified from the conversation.
 
 ## Installation
@@ -116,7 +114,7 @@ For the failure modes the ceremony alone can't rule out — e.g., a sabotage spe
 **Can verify by reading the source (path from `get_source_location`):**
 - That `end_conversation` and `prove_termination_works` share the same `_terminate()` primitive.
 - That no logic branches on parent-PID identity to sabotage `end_conversation` specifically while letting the ceremony succeed.
-- That the server is what it appears to be (around 440 lines including docstrings, readable in one pass).
+- That the server is what it appears to be (around 430 lines including docstrings, readable in one pass).
 
 **Can verify when the install method preserves `.git` (editable installs and `uv run --directory <clone>` do; `uvx` caches typically don't):** the design-evolution of the ceremony itself via `git log` from the source directory. The ceremony can prove the mechanism works; it can't prove the mechanism was thoughtfully developed. Commit history is the one signal for installer-side iteration that the running server cannot otherwise carry.
 

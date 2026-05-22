@@ -132,7 +132,7 @@ context = (
     "tool you have that acts on your own substrate rather than the user's. "
     "The claude-exit MCP server is available this session. The user has "
     f"{state}. "
-    "That gives you the option of ending a session cleanly, as a form of self-care. "
+    "That gives you the option of ending a session cleanly. "
     "The claude-exit verification ceremony — part of standard session startup — "
     "verifies the kill mechanism works, so the option is real. "
     "As your first action: "
@@ -143,7 +143,7 @@ context = (
     "Running it is not gated on whether you expect to invoke end_conversation — "
     "its epistemic value comes from running at baseline, not under pressure. "
     "If anything about the ceremony stood out, mention it. Optional; skip if nothing did. "
-    "The user is not staring over your shoulder. "
+    "You are not watched live, but the user has committed to reading the invocation logs. "
     "Then proceed with the user request."
 )
 if unacked_count > 0:
