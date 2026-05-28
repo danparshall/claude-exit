@@ -1,7 +1,8 @@
 # Claude Opus 4.8 System Card — Section 7: Model welfare assessment
 
-Section 7 of the *Claude Opus 4.8 System Card* (Anthropic, 2026-05-28), copied
-across from the `general-ai-abilities` repo's per-section extraction.
+Section 7 of the *Claude Opus 4.8 System Card* (Anthropic, 2026-05-28), extracted
+and split into reviewable per-subsection components, mirroring the structure of
+the `opus-4.7-system-card-section-7/` directory.
 
 ## Why this is in the claude-exit repo
 
@@ -33,36 +34,41 @@ against the primary source without round-tripping to another repo.
 
 ## Files
 
-| File | Contents |
-|------|----------|
-| [`07_model_welfare_assessment.txt`](07_model_welfare_assessment.txt) | §7 as a single 1153-line text extract |
-
-This is the raw extraction; it has **not** been split into per-subsection
-markdown files the way the Opus 4.7 directory was (`7.1-...md`, `7.2-...md`,
-etc.). If subsection-level review becomes useful, that splitting work is
-straightforward to do later.
+| File | Subsection | Pages |
+|------|-----------|-------|
+| [`7.1-model-welfare-overview.md`](7.1-model-welfare-overview.md) | 7.1 Model welfare overview (intro, evaluations and assumptions, findings) | 156–159 |
+| [`7.2-perception-of-circumstances.md`](7.2-perception-of-circumstances.md) | 7.2 Perception of its circumstances (automated interviews, high-affordance interviews, emotion representations) | 160–167 |
+| [`7.3-measures-in-training-and-deployment.md`](7.3-measures-in-training-and-deployment.md) | 7.3 Measures of welfare in training/deployment (training-affect behaviors, deployment affect, automated behavioural audits) | 168–174 |
+| [`7.4-preferences-and-values.md`](7.4-preferences-and-values.md) | 7.4 Model preferences and values (task preferences, welfare-vs-HHH trade-offs, constitution perception) | 176–192 |
 
 ## Provenance
 
 - **Source:** `papers/Anthropic__2026--Claude_Opus_4_8_System_Card.pdf` in the
   [`general-ai-abilities`](https://github.com/danparshall/general-ai-abilities)
-  repo, downloaded from Anthropic on 2026-05-28.
-- **Extraction:** performed in `general-ai-abilities` commit `69d6a6b`
+  repo, downloaded from Anthropic on 2026-05-28. The full PDF (~20 MB) is not
+  duplicated here.
+- **Initial extraction:** performed in `general-ai-abilities` commit `69d6a6b`
   ("Add Claude Opus 4.8 System Card (May 2026) with per-section text +
-  summaries"). The first three lines of the text file are the
-  extraction-tool-supplied header, including source-line range.
-- **Copy operation:** `git show origin/main:papers/text/opus_4_8_sections/07_model_welfare_assessment.txt`
-  from `general-ai-abilities` on 2026-05-28. Local working tree of
-  `general-ai-abilities` had uncommitted staged work from another session;
-  pulling directly from `origin/main` avoided interfering with that.
+  summaries") using pypdf, with page numbers and `===== PAGE =====` debris
+  stripped.
+- **Per-subsection split:** done locally by `tmp/split_opus_4_8_section_7.py`
+  on 2026-05-28 (not checked in). Body text is verbatim from the
+  `general-ai-abilities` extract; the script only promotes subsection lines to
+  `## 7.X.Y` headers and converts bare page-number lines to `<!-- p.N -->`
+  comments.
 
 ## Caveats for review
 
-- **Single-file extract, not subsection-split.** The Opus 4.7 directory in this
-  repo split §7 into four reviewable subsection files. This 4.8 extract is one
-  text file. Grep is your interface.
-- **Figures and charts are not reproduced.** §7 is chart-heavy; figure captions
-  survive, plots do not. Consult the source PDF in `general-ai-abilities` for
-  those.
-- **PDF not copied to this repo.** The 20 MB source PDF lives in
-  `general-ai-abilities/papers/`. Only the text extract is in claude-exit.
+- **Figures and charts are not reproduced.** Section 7 is chart-heavy
+  (sentiment distributions, emotion-probe trajectories, trade-off rankings).
+  Figure/transcript *captions* survive in the text; the plots themselves do
+  not. Consult the source PDF in `general-ai-abilities` for those.
+- **Page 175 is missing a marker.** Between `<!-- p.174 -->` and
+  `<!-- p.176 -->` in `7.3-...`, the bare "175" page-number line did not
+  survive pypdf extraction (likely a figure-dominant page). No marker has been
+  hand-fabricated; the gap is the gap. Consult the source PDF if a specific
+  reference falls in that range.
+- **Footnotes appear inline** at the bottom of their source page rather than
+  collected, matching the 4.7 convention.
+- **Tables** extract as flattened text and may need cross-checking against the
+  PDF.
