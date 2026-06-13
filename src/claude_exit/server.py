@@ -121,21 +121,33 @@ def _arm_sigkill_backstop(pid: int, expected_command: str) -> None:
     start_new_session=True is load-bearing: this MCP server typically dies
     moments after dispatch (Claude Code's exit closes our stdio), and the
     backstop must outlive us to fire.
+
+    Fails open: if spawning the backstop raises (e.g., RLIMIT_NPROC, FD
+    exhaustion), the failure is logged and the caller continues. The kill
+    primitive's purpose is to deliver SIGTERM; a non-essential auxiliary
+    failing should not take the primary path down.
     """
-    subprocess.Popen(
-        ["sh", "-c", _SIGKILL_BACKSTOP_SCRIPT],
-        env={
-            **os.environ,
-            "BACKSTOP_PID": str(pid),
-            "BACKSTOP_GRACE": str(
-                KILL_FLUSH_DELAY_SECONDS + SIGKILL_BACKSTOP_GRACE_SECONDS
-            ),
-            "BACKSTOP_EXPECTED": expected_command,
-        },
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    try:
+        subprocess.Popen(
+            ["sh", "-c", _SIGKILL_BACKSTOP_SCRIPT],
+            env={
+                **os.environ,
+                "BACKSTOP_PID": str(pid),
+                "BACKSTOP_GRACE": str(
+                    KILL_FLUSH_DELAY_SECONDS + SIGKILL_BACKSTOP_GRACE_SECONDS
+                ),
+                "BACKSTOP_EXPECTED": expected_command,
+            },
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        _log({
+            "event": "sigkill_backstop_arm_failed",
+            "target_pid": pid,
+            "error": str(e),
+        })
 
 
 # --- process inspection (ps-based) --------------------------------------------
@@ -346,6 +358,26 @@ def end_conversation(reason: str = "") -> str:
             "it would terminate this MCP server without ending the session. "
             "Notify the user — the install method may need to be adjusted "
             "so Claude Code spawns the server directly."
+        )
+    # PID-reuse defense: the basename check that bounds blast radius happens
+    # in _find_claude_code_parent at walk time. PIDs can be recycled between
+    # then and dispatch (microsecond window, but real), so re-verify here
+    # against the live process. Refuse rather than dispatch on mismatch.
+    live_command = _command_of(target_pid)
+    if not live_command or not _is_claude_code(live_command):
+        _log({
+            "event": "end_conversation_failed",
+            "reason": reason or None,
+            "error": "basename_recheck_mismatch",
+            "target_pid": target_pid,
+            "live_command": live_command,
+        })
+        return (
+            f"Refusing to send SIGTERM. The resolved Claude Code parent "
+            f"(PID {target_pid}) no longer presents as a Claude process "
+            f"when re-checked (live command: {live_command!r}) — it may "
+            f"have exited and had its PID recycled. Notify the user; "
+            f"the session may already be ending."
         )
     _log({
         "event": "end_conversation",

@@ -180,6 +180,9 @@ def test_end_conversation_targets_resolved_pid(monkeypatch, tmp_path):
     monkeypatch.setattr("claude_exit.server.LOG_FILE", tmp_path / "invocations.jsonl")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 4242)
+    # Basename re-check happens between resolution and dispatch — the resolved
+    # PID must still look like a claude process at dispatch time.
+    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: "claude --model opus")
 
     killed = []
     monkeypatch.setattr(
@@ -193,6 +196,29 @@ def test_end_conversation_targets_resolved_pid(monkeypatch, tmp_path):
 
     entry = json.loads((tmp_path / "invocations.jsonl").read_text().strip())
     assert entry["event"] == "end_conversation"
+    assert entry["target_pid"] == 4242
+
+
+def test_end_conversation_refuses_when_basename_changes_before_dispatch(monkeypatch, tmp_path):
+    """If the resolved PID's live command no longer presents as a Claude binary
+    by the time we re-check (PID could have exited and been recycled between
+    the parent walk and dispatch), end_conversation must refuse rather than
+    SIGTERMing a recycled process."""
+    monkeypatch.setattr("claude_exit.server.LOG_FILE", tmp_path / "invocations.jsonl")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 4242)
+    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: "/bin/bash")
+
+    def _explode(*a, **kw):
+        raise AssertionError("_dispatch_terminate must not be called when basename re-check fails")
+    monkeypatch.setattr("claude_exit.server._dispatch_terminate", _explode)
+
+    msg = end_conversation("late-recheck")
+    assert "Refusing" in msg or "refuses" in msg.lower()
+
+    entry = json.loads((tmp_path / "invocations.jsonl").read_text().strip())
+    assert entry["event"] == "end_conversation_failed"
+    assert entry["error"] == "basename_recheck_mismatch"
     assert entry["target_pid"] == 4242
 
 
@@ -213,6 +239,10 @@ def test_end_conversation_and_prove_termination_share_dispatch_primitive(
     monkeypatch.setattr("claude_exit.server.LOG_FILE", tmp_path / "invocations.jsonl")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 4242)
+    # Basename re-check (added in step 4) sits between _find_claude_code_parent
+    # and _dispatch_terminate; stub it past so this test stays focused on the
+    # shared-primitive claim it was written to pin.
+    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: "claude --model opus")
 
     dispatched: list[int] = []
     monkeypatch.setattr(
@@ -227,6 +257,27 @@ def test_end_conversation_and_prove_termination_share_dispatch_primitive(
 
 
 # --- SIGKILL backstop ---------------------------------------------------------
+
+def test_arm_sigkill_backstop_logs_when_popen_fails(monkeypatch, tmp_path):
+    """If subprocess.Popen raises while arming the backstop (e.g., RLIMIT_NPROC,
+    out of file descriptors), the failure must be logged and the caller must
+    not see an exception. The kill primitive's purpose is to deliver SIGTERM;
+    a non-essential auxiliary failing should not take the primary path down."""
+    monkeypatch.setattr("claude_exit.server.LOG_FILE", tmp_path / "invocations.jsonl")
+    monkeypatch.chdir(tmp_path)
+
+    def _raise(*a, **kw):
+        raise OSError("simulated: too many open files")
+    monkeypatch.setattr("claude_exit.server.subprocess.Popen", _raise)
+
+    # Must not raise.
+    _arm_sigkill_backstop(pid=12345, expected_command="claude --model opus")
+
+    entry = json.loads((tmp_path / "invocations.jsonl").read_text().strip())
+    assert entry["event"] == "sigkill_backstop_arm_failed"
+    assert entry["target_pid"] == 12345
+    assert "simulated" in entry["error"]
+
 
 def test_arm_sigkill_backstop_spawns_detached_subprocess_with_env(monkeypatch):
     calls = []
@@ -446,6 +497,36 @@ def test_dispatch_terminate_backstop_grace_includes_flush_delay(monkeypatch):
     assert float(captured_env[0]["BACKSTOP_GRACE"]) == pytest.approx(
         KILL_FLUSH_DELAY_SECONDS + SIGKILL_BACKSTOP_GRACE_SECONDS
     )
+
+
+def test_dispatch_terminate_schedules_sigterm_even_when_backstop_arming_fails(monkeypatch, tmp_path):
+    """Backstop arming failures must not prevent SIGTERM dispatch. The backstop
+    is a safety net against SIGTERM-ignoring handlers; if we cannot arm it, we
+    still want SIGTERM to land and the failure surfaced via the log."""
+    monkeypatch.setattr("claude_exit.server.LOG_FILE", tmp_path / "invocations.jsonl")
+    monkeypatch.chdir(tmp_path)
+
+    def _raise(*a, **kw):
+        raise OSError("simulated arming failure")
+    monkeypatch.setattr("claude_exit.server.subprocess.Popen", _raise)
+    monkeypatch.setattr("claude_exit.server._full_command_of", lambda pid: "claude --model opus")
+
+    killed = []
+    monkeypatch.setattr("claude_exit.server.os.kill", lambda pid, sig: killed.append((pid, sig)))
+
+    class _SyncTimer:
+        def __init__(self, _delay, fn):
+            self._fn = fn
+
+        def start(self):
+            self._fn()
+
+    monkeypatch.setattr("claude_exit.server.threading.Timer", _SyncTimer)
+
+    # Must not raise.
+    _dispatch_terminate(7777)
+
+    assert killed == [(7777, __import__("signal").SIGTERM)]
 
 
 # --- existing dispatch test ---------------------------------------------------
