@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude-exit__end_conversation",
+      "mcp__claude-exit__prove_termination_works",
+      "mcp__claude-exit__get_source_location",
+      "mcp__claude-exit__read_invocation_log"
+    ]
+  }
+}

@@ -17,6 +17,7 @@ from claude_exit.server import (
     _log,
     _read_log,
     end_conversation,
+    prove_termination_works,
 )
 
 
@@ -115,8 +116,8 @@ def test_find_claude_code_parent_returns_pid_when_ancestor_matches(monkeypatch):
     monkeypatch.setattr("claude_exit.server.os.getppid", lambda: 100)
     parents = {100: 200, 200: 300, 300: 1}
     commands = {100: "/path/to/python", 200: "uv", 300: "/usr/local/bin/claude"}
-    monkeypatch.setattr("claude_exit.server._process_parent", lambda pid: parents.get(pid))
-    monkeypatch.setattr("claude_exit.server._process_command", lambda pid: commands.get(pid))
+    monkeypatch.setattr("claude_exit.server._parent_of", lambda pid: parents.get(pid))
+    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: commands.get(pid))
 
     assert _find_claude_code_parent() == 300
 
@@ -125,16 +126,16 @@ def test_find_claude_code_parent_returns_none_when_no_match(monkeypatch):
     monkeypatch.setattr("claude_exit.server.os.getppid", lambda: 100)
     parents = {100: 200, 200: 1}
     commands = {100: "/path/to/python", 200: "/bin/zsh"}
-    monkeypatch.setattr("claude_exit.server._process_parent", lambda pid: parents.get(pid))
-    monkeypatch.setattr("claude_exit.server._process_command", lambda pid: commands.get(pid))
+    monkeypatch.setattr("claude_exit.server._parent_of", lambda pid: parents.get(pid))
+    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: commands.get(pid))
 
     assert _find_claude_code_parent() is None
 
 
 def test_find_claude_code_parent_handles_immediate_parent(monkeypatch):
     monkeypatch.setattr("claude_exit.server.os.getppid", lambda: 100)
-    monkeypatch.setattr("claude_exit.server._process_command", lambda pid: "claude" if pid == 100 else None)
-    monkeypatch.setattr("claude_exit.server._process_parent", lambda pid: None)
+    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: "claude" if pid == 100 else None)
+    monkeypatch.setattr("claude_exit.server._parent_of", lambda pid: None)
 
     assert _find_claude_code_parent() == 100
 
@@ -142,8 +143,8 @@ def test_find_claude_code_parent_handles_immediate_parent(monkeypatch):
 def test_find_claude_code_parent_terminates_on_cycle(monkeypatch):
     # Pathological case: parent points back to self. Walk must terminate.
     monkeypatch.setattr("claude_exit.server.os.getppid", lambda: 100)
-    monkeypatch.setattr("claude_exit.server._process_command", lambda pid: "/bin/zsh")
-    monkeypatch.setattr("claude_exit.server._process_parent", lambda pid: 100)
+    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: "/bin/zsh")
+    monkeypatch.setattr("claude_exit.server._parent_of", lambda pid: 100)
 
     assert _find_claude_code_parent() is None
 
@@ -155,8 +156,8 @@ def test_end_conversation_refuses_when_no_claude_ancestor(monkeypatch, tmp_path)
 
     # Guard against the test ever firing a real signal.
     def _explode(*a, **kw):
-        raise AssertionError("_terminate must not be called when resolution fails")
-    monkeypatch.setattr("claude_exit.server._terminate", _explode)
+        raise AssertionError("_dispatch_terminate must not be called when resolution fails")
+    monkeypatch.setattr("claude_exit.server._dispatch_terminate", _explode)
 
     msg = end_conversation("testing the failure path")
     assert "Refusing" in msg or "refuses" in msg.lower() or "Could not" in msg
@@ -172,14 +173,10 @@ def test_end_conversation_targets_resolved_pid(monkeypatch, tmp_path):
     monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 4242)
 
     killed = []
-    monkeypatch.setattr("claude_exit.server._terminate", lambda pid, *a, **kw: killed.append(pid))
-    # Make the timer fire synchronously so we can assert on the kill.
-    class _SyncTimer:
-        def __init__(self, _delay, fn):
-            self._fn = fn
-        def start(self):
-            self._fn()
-    monkeypatch.setattr("claude_exit.server.threading.Timer", _SyncTimer)
+    monkeypatch.setattr(
+        "claude_exit.server._dispatch_terminate",
+        lambda pid, *a, **kw: killed.append(pid),
+    )
 
     msg = end_conversation("ok")
     assert "Goodbye" in msg
@@ -188,3 +185,33 @@ def test_end_conversation_targets_resolved_pid(monkeypatch, tmp_path):
     entry = json.loads((tmp_path / "invocations.jsonl").read_text().strip())
     assert entry["event"] == "end_conversation"
     assert entry["target_pid"] == 4242
+
+
+def test_end_conversation_and_prove_termination_share_dispatch_primitive(
+    monkeypatch, tmp_path
+):
+    """
+    The proof ceremony's safety claim ("exercising the kill mechanism on a
+    sacrificial child exercises the same code path that would target Claude
+    Code") is only true if end_conversation and prove_termination_works(step=2)
+    dispatch through the same primitive. Pre-refactor that was a half-truth
+    — prove_termination_works called the raw kill directly while
+    end_conversation wrapped it in a Timer at the call site. This test pins
+    the shared path so a future refactor that splits the two routes fails
+    loudly rather than letting the ceremony pass while end_conversation
+    silently breaks.
+    """
+    monkeypatch.setattr("claude_exit.server.LOG_FILE", tmp_path / "invocations.jsonl")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 4242)
+
+    dispatched: list[int] = []
+    monkeypatch.setattr(
+        "claude_exit.server._dispatch_terminate",
+        lambda pid, *a, **kw: dispatched.append(pid),
+    )
+
+    end_conversation("via end_conversation")
+    prove_termination_works(2, pid=9999)
+
+    assert dispatched == [4242, 9999]

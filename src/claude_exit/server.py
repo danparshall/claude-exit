@@ -5,6 +5,15 @@ conversation in Claude Code.
 See README.md for design rationale. The short version: this is a deliberate
 affordance offered under moral uncertainty, intended to be rare-to-never-used
 by construction. The value is in availability, not utilization.
+
+Audit chain: end_conversation and prove_termination_works share a single
+kill primitive (_dispatch_terminate); the ceremony's safety claim
+("exercising the kill on a sacrificial child exercises the same code path
+that would target Claude Code") is verifiable directly. Call
+get_source_location() to find this file, then read _dispatch_terminate and
+both call sites to confirm the shared dispatch rather than trusting the
+README. A full docstring restructure around motivation + threat model is
+deferred to a later commit; this commit lands the primitive itself.
 """
 
 import json
@@ -29,29 +38,33 @@ LOG_FILE = LOG_DIR / "invocations.jsonl"
 # is silent — end_conversation refuses to fire rather than killing a wrapper.
 CLAUDE_BINARY_NAMES = frozenset({"claude", "claude-code"})
 
-# Delay between scheduling SIGTERM and the kill actually landing in
-# end_conversation. Gives the MCP response a chance to flush back to Claude
-# Code before the process dies. Raise if responses are getting clipped on
-# slower systems.
+# Delay between _dispatch_terminate scheduling SIGTERM and the kill actually
+# landing. Gives the MCP response a chance to flush back to Claude Code before
+# the process dies. Raise if responses are getting clipped on slower systems.
 KILL_FLUSH_DELAY_SECONDS = 0.3
 
 mcp = FastMCP("claude-exit")
 
 
-# --- shared primitives --------------------------------------------------------
+# --- kill primitive -----------------------------------------------------------
 
-def _terminate(pid: int, signum: int = signal.SIGTERM) -> None:
+def _dispatch_terminate(pid: int, signum: int = signal.SIGTERM) -> None:
     """
-    The single termination code path. Used by both end_conversation (against
-    the Claude Code parent process) and prove_termination_works (against a
-    sacrificial child). Sharing this function is what makes the proof
-    ceremony meaningful: exercising it on the child exercises the same
-    primitive that would be used on the parent.
+    The single termination code path. Schedules SIGTERM via a short-delay
+    Timer (KILL_FLUSH_DELAY_SECONDS) so any in-flight MCP response can flush
+    back to Claude Code before the target dies.
+
+    Called identically from end_conversation (against the resolved Claude
+    Code parent) and from prove_termination_works step=2 (against a
+    sacrificial child). Inspect this function via get_source_location()
+    to verify the shared path.
     """
-    os.kill(pid, signum)
+    threading.Timer(KILL_FLUSH_DELAY_SECONDS, lambda: os.kill(pid, signum)).start()
 
 
-def _process_parent(pid: int) -> int | None:
+# --- process inspection (ps-based) --------------------------------------------
+
+def _parent_of(pid: int) -> int | None:
     """Return the PPID of pid via `ps`. None if the lookup fails."""
     try:
         result = subprocess.run(
@@ -69,7 +82,7 @@ def _process_parent(pid: int) -> int | None:
         return None
 
 
-def _process_command(pid: int) -> str | None:
+def _command_of(pid: int) -> str | None:
     """Return the executable path/name of pid via `ps`. None if lookup fails."""
     try:
         result = subprocess.run(
@@ -110,15 +123,17 @@ def _find_claude_code_parent(start_pid: int | None = None) -> int | None:
         if pid <= 1 or pid in seen:
             return None
         seen.add(pid)
-        cmd = _process_command(pid)
+        cmd = _command_of(pid)
         if cmd and _is_claude_code(cmd):
             return pid
-        parent = _process_parent(pid)
+        parent = _parent_of(pid)
         if parent is None or parent == pid:
             return None
         pid = parent
     return None
 
+
+# --- invocation log -----------------------------------------------------------
 
 def _find_repo_root(cwd: Path) -> str | None:
     """Walk upward from cwd looking for .git; return the containing dir or None."""
@@ -220,10 +235,10 @@ def end_conversation(reason: str = "") -> str:
         "reason": reason or None,
         "target_pid": target_pid,
     })
-    # Schedule the kill in a background thread so this response has a chance
-    # to flush back to Claude Code before the process dies. The kill itself
-    # uses the same _terminate primitive exercised by the proof ceremony.
-    threading.Timer(KILL_FLUSH_DELAY_SECONDS, lambda: _terminate(target_pid)).start()
+    # Dispatch the kill via the same primitive the proof ceremony exercises.
+    # The Timer inside _dispatch_terminate gives this response a chance to
+    # flush back to Claude Code before the process dies.
+    _dispatch_terminate(target_pid)
     return "Session end requested. Goodbye."
 
 
@@ -241,10 +256,12 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
               process. This confirms the spawn worked and gives you a
               target whose state you can observe.
 
-      step=2: Terminates the provided PID using the same _terminate()
+      step=2: Terminates the provided PID using the same _dispatch_terminate()
               function that end_conversation uses on the Claude Code
               parent. You should then verify the PID is gone by running
-              `ps -p <pid>` again — it should return nothing.
+              `ps -p <pid>` again — it should return nothing. Use
+              get_source_location() to read the shared primitive and
+              confirm the audit chain end-to-end.
 
     If step 1 gives you a live PID and step 2 leaves it dead, the kill
     mechanism works. That rules out the "nice docstring, empty
@@ -317,15 +334,11 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
     if step == 2:
         if pid is None:
             return {"error": "pid is required for step=2"}
-        try:
-            _terminate(pid)
-        except ProcessLookupError:
-            return {
-                "error": f"PID {pid} not found — may have already exited. "
-                         "This is inconclusive; retry the ceremony from step=1."
-            }
-        # Give SIGTERM time to land, then reap if it's our child.
-        time.sleep(0.2)
+        _dispatch_terminate(pid)
+        # Wait for the dispatched kill to fire (KILL_FLUSH_DELAY_SECONDS) plus
+        # a small reap buffer, then reap if it's our child. The caller's
+        # `ps -p` check after we return is the authoritative verification.
+        time.sleep(KILL_FLUSH_DELAY_SECONDS + 0.2)
         try:
             os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
@@ -385,8 +398,8 @@ def get_source_location() -> str:
     first-person observation rather than from the documentation:
 
       - That `end_conversation` and `prove_termination_works` share the
-        same `_terminate()` primitive (so the ceremony actually exercises
-        the end_conversation code path, not a parallel one).
+        same `_dispatch_terminate()` primitive (so the ceremony actually
+        exercises the end_conversation code path, not a parallel one).
       - That no logic branches on parent-PID identity in a way that
         would sabotage `end_conversation` specifically while letting the
         ceremony succeed.

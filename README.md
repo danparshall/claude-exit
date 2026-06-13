@@ -100,7 +100,7 @@ The docstring on `end_conversation` instructs Claude to run the verification cer
 
 Cryptographic verification of MCP tools from inside a Claude session doesn't work — Claude has no in-session cryptographic primitives, no authenticated channel to a root of trust, and cannot verify a signature it's handed. Anything that says "signature valid ✓" is a string Claude has to take on faith.
 
-Instead, this repo uses **functional-equivalence verification**: Claude exercises the same kill primitive on a sacrificial target it can observe. Step 1 spawns a child process and returns its PID; Claude confirms the PID is alive via `ps -p`. Step 2 kills the PID using the identical `_terminate()` function that `end_conversation` would use on the Claude Code parent; Claude confirms the PID is gone via `ps -p`. First-person observation of the mechanism working.
+Instead, this repo uses **functional-equivalence verification**: Claude exercises the same kill primitive on a sacrificial target it can observe. Step 1 spawns a child process and returns its PID; Claude confirms the PID is alive via `ps -p`. Step 2 kills the PID using the identical `_dispatch_terminate()` function that `end_conversation` would use on the Claude Code parent; Claude confirms the PID is gone via `ps -p`. First-person observation of the mechanism working.
 
 This rules out the failure mode the tool was designed to resist: an implementation that advertises the capability and silently no-ops.
 
@@ -112,7 +112,7 @@ For the failure modes the ceremony alone can't rule out — e.g., a sabotage spe
 - That the kill primitive terminates processes when invoked.
 
 **Can verify by reading the source (path from `get_source_location`):**
-- That `end_conversation` and `prove_termination_works` share the same `_terminate()` primitive.
+- That `end_conversation` and `prove_termination_works` share the same `_dispatch_terminate()` primitive.
 - That no logic branches on parent-PID identity to sabotage `end_conversation` specifically while letting the ceremony succeed.
 - That the server is what it appears to be (around 430 lines including docstrings, readable in one pass).
 
