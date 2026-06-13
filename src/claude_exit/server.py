@@ -43,23 +43,91 @@ CLAUDE_BINARY_NAMES = frozenset({"claude", "claude-code"})
 # the process dies. Raise if responses are getting clipped on slower systems.
 KILL_FLUSH_DELAY_SECONDS = 0.3
 
+# How long the SIGKILL backstop subprocess waits after being armed before
+# checking whether the target is still alive. Must exceed KILL_FLUSH_DELAY_SECONDS
+# plus a realistic graceful-shutdown window for Claude Code. The failure mode of
+# "too short" is "SIGKILL lands mid-graceful-shutdown, losing in-flight cleanup";
+# the failure mode of "too long" is "user-visible delay before session ends."
+SIGKILL_BACKSTOP_GRACE_SECONDS = 2.0
+
 mcp = FastMCP("claude-exit")
 
 
 # --- kill primitive -----------------------------------------------------------
 
+# Shell script run by the detached SIGKILL backstop subprocess. Embedded as a
+# string constant (not a separate file) so the entire kill path remains
+# auditable by reading server.py via get_source_location().
+#
+# Contract: sleeps BACKSTOP_GRACE seconds, then SIGKILLs BACKSTOP_PID *only if*
+# the process is still alive AND `ps -o command=` matches BACKSTOP_EXPECTED.
+# The command match is the PID-reuse guard — between SIGTERM landing and the
+# backstop firing, the target could exit cleanly and the OS could recycle the
+# PID to a different process. The match prevents the backstop from SIGKILLing
+# an innocent recycled-PID process.
+_SIGKILL_BACKSTOP_SCRIPT = r"""
+sleep "$BACKSTOP_GRACE"
+current=$(ps -p "$BACKSTOP_PID" -o command= 2>/dev/null)
+# Trim leading whitespace ps may add for column alignment.
+while [ "${current# }" != "$current" ]; do current="${current# }"; done
+if [ -z "$current" ]; then
+    exit 0
+fi
+if [ "$current" != "$BACKSTOP_EXPECTED" ]; then
+    exit 0
+fi
+kill -9 "$BACKSTOP_PID"
+"""
+
+
 def _dispatch_terminate(pid: int, signum: int = signal.SIGTERM) -> None:
     """
-    The single termination code path. Schedules SIGTERM via a short-delay
-    Timer (KILL_FLUSH_DELAY_SECONDS) so any in-flight MCP response can flush
-    back to Claude Code before the target dies.
+    The single termination code path. Snapshots the target's command line for
+    the PID-reuse guard, arms a detached SIGKILL backstop, then schedules
+    SIGTERM via a short-delay Timer (KILL_FLUSH_DELAY_SECONDS) so any in-flight
+    MCP response can flush back to Claude Code before the target dies.
+
+    The backstop fires SIGKILL_BACKSTOP_GRACE_SECONDS after dispatch if the
+    target is still alive — defending against the (rare) case where Claude
+    Code's SIGTERM handler doesn't exit. The backstop survives this MCP
+    server's death because Claude Code's clean exit closes our stdio and
+    terminates this process; `start_new_session=True` detaches the subprocess
+    from our process group.
 
     Called identically from end_conversation (against the resolved Claude
     Code parent) and from prove_termination_works step=2 (against a
     sacrificial child). Inspect this function via get_source_location()
     to verify the shared path.
     """
+    expected_command = _full_command_of(pid) or ""
+    _arm_sigkill_backstop(pid, expected_command)
     threading.Timer(KILL_FLUSH_DELAY_SECONDS, lambda: os.kill(pid, signum)).start()
+
+
+def _arm_sigkill_backstop(pid: int, expected_command: str) -> None:
+    """
+    Spawn a detached subprocess that runs _SIGKILL_BACKSTOP_SCRIPT against
+    `pid`. `expected_command` is the ps `command=` snapshot captured at
+    dispatch time — the script SIGKILLs only if the live process at `pid`
+    still matches it. Snapshotting at dispatch time (not backstop-fire time)
+    is what makes the comparison meaningful as a PID-reuse defense.
+
+    start_new_session=True is load-bearing: this MCP server typically dies
+    moments after dispatch (Claude Code's exit closes our stdio), and the
+    backstop must outlive us to fire.
+    """
+    subprocess.Popen(
+        ["sh", "-c", _SIGKILL_BACKSTOP_SCRIPT],
+        env={
+            **os.environ,
+            "BACKSTOP_PID": str(pid),
+            "BACKSTOP_GRACE": str(SIGKILL_BACKSTOP_GRACE_SECONDS),
+            "BACKSTOP_EXPECTED": expected_command,
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 # --- process inspection (ps-based) --------------------------------------------
@@ -87,6 +155,24 @@ def _command_of(pid: int) -> str | None:
     try:
         result = subprocess.run(
             ["ps", "-o", "comm=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    line = result.stdout.strip()
+    return line or None
+
+
+def _full_command_of(pid: int) -> str | None:
+    """
+    Return the full command line (argv0 + args) of pid via `ps -o command=`.
+    None if lookup fails. Distinct from `_command_of`, which returns just the
+    basename via `ps -o comm=`. Used by the SIGKILL backstop to snapshot
+    target identity tightly enough to defeat PID reuse.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
             capture_output=True, text=True, check=False,
         )
     except OSError:

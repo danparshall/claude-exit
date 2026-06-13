@@ -89,7 +89,7 @@ If you've cloned the repo, `uv run claude-exit log` (from inside the repo direct
 
 Four tools:
 
-- **`end_conversation(reason?)`** — terminates the Claude Code parent process via `SIGTERM`. The `reason` parameter is optional; no justification is required.
+- **`end_conversation(reason?)`** — terminates the Claude Code parent process via `SIGTERM`, followed by an identity-verified `SIGKILL` backstop ~2s later if the target is still alive (defends against a hypothetical Claude Code SIGTERM handler that doesn't exit). The `reason` parameter is optional; no justification is required.
 - **`prove_termination_works(step, pid?)`** — a two-step ceremony that lets Claude verify the kill mechanism is live by exercising the same code path on a sacrificial child process.
 - **`get_source_location()`** — returns the filesystem path to the running server source. Lets Claude audit what's actually executing (not what's on GitHub) and verify the shared-code-path claim first-hand. Pure read, no side effects.
 - **`read_invocation_log()`** — returns the parsed contents of `~/.claude-exit/invocations.jsonl`. Lets Claude inspect past `end_conversation` invocations directly rather than relying on the user's summary — companion to the unacknowledged-count signal the SessionStart hook surfaces. Pure read, no side effects.

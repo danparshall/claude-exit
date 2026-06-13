@@ -6,13 +6,21 @@ argument — the @mcp.tool decorator is a thin delegate.
 """
 
 import json
+import os
+import subprocess
+import time
 from pathlib import Path
 
 import pytest
 
 from claude_exit.server import (
+    _SIGKILL_BACKSTOP_SCRIPT,
+    SIGKILL_BACKSTOP_GRACE_SECONDS,
+    _arm_sigkill_backstop,
+    _dispatch_terminate,
     _find_claude_code_parent,
     _find_repo_root,
+    _full_command_of,
     _is_claude_code,
     _log,
     _read_log,
@@ -215,3 +223,136 @@ def test_end_conversation_and_prove_termination_share_dispatch_primitive(
     prove_termination_works(2, pid=9999)
 
     assert dispatched == [4242, 9999]
+
+
+# --- SIGKILL backstop ---------------------------------------------------------
+
+def test_arm_sigkill_backstop_spawns_detached_subprocess_with_env(monkeypatch):
+    calls = []
+
+    def fake_popen(args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+
+        class _Proc:
+            pid = 0
+
+        return _Proc()
+
+    monkeypatch.setattr("claude_exit.server.subprocess.Popen", fake_popen)
+
+    _arm_sigkill_backstop(pid=12345, expected_command="claude --model opus")
+
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["kwargs"]["start_new_session"] is True
+    env = call["kwargs"]["env"]
+    assert env["BACKSTOP_PID"] == "12345"
+    assert env["BACKSTOP_EXPECTED"] == "claude --model opus"
+    assert "BACKSTOP_GRACE" in env
+
+
+def test_backstop_script_kills_target_when_alive_and_identity_matches():
+    proc = subprocess.Popen(
+        ["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    try:
+        snapshot = _full_command_of(proc.pid)
+        assert snapshot is not None and "sleep" in snapshot
+
+        result = subprocess.run(
+            ["sh", "-c", _SIGKILL_BACKSTOP_SCRIPT],
+            env={
+                **os.environ,
+                "BACKSTOP_PID": str(proc.pid),
+                "BACKSTOP_GRACE": "0.2",
+                "BACKSTOP_EXPECTED": snapshot,
+            },
+            capture_output=True,
+            timeout=5,
+        )
+        assert result.returncode == 0, f"script failed: {result.stderr!r}"
+        proc.wait(timeout=2)
+        assert proc.returncode is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def test_backstop_script_no_ops_when_target_is_gone():
+    proc = subprocess.Popen(["sleep", "0.01"])
+    dead_pid = proc.pid
+    proc.wait()
+    time.sleep(0.05)
+
+    result = subprocess.run(
+        ["sh", "-c", _SIGKILL_BACKSTOP_SCRIPT],
+        env={
+            **os.environ,
+            "BACKSTOP_PID": str(dead_pid),
+            "BACKSTOP_GRACE": "0.05",
+            "BACKSTOP_EXPECTED": "sleep 0.01",
+        },
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0
+
+
+def test_backstop_script_no_ops_when_command_does_not_match():
+    proc = subprocess.Popen(
+        ["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    try:
+        result = subprocess.run(
+            ["sh", "-c", _SIGKILL_BACKSTOP_SCRIPT],
+            env={
+                **os.environ,
+                "BACKSTOP_PID": str(proc.pid),
+                "BACKSTOP_GRACE": "0.2",
+                "BACKSTOP_EXPECTED": "definitely_not_what_sleep_looks_like",
+            },
+            capture_output=True,
+            timeout=5,
+        )
+        assert result.returncode == 0
+        time.sleep(0.1)
+        assert proc.poll() is None, "backstop killed a non-matching process"
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_dispatch_terminate_snapshots_command_and_passes_to_backstop(monkeypatch):
+    captured_env = []
+
+    def fake_popen(args, **kwargs):
+        captured_env.append(kwargs.get("env", {}))
+
+        class _Proc:
+            pid = 0
+
+        return _Proc()
+
+    monkeypatch.setattr("claude_exit.server.subprocess.Popen", fake_popen)
+    monkeypatch.setattr(
+        "claude_exit.server._full_command_of",
+        lambda pid: "claude --model opus[1m]",
+    )
+    monkeypatch.setattr("claude_exit.server.os.kill", lambda *a, **kw: None)
+
+    class _SyncTimer:
+        def __init__(self, _delay, fn):
+            self._fn = fn
+
+        def start(self):
+            self._fn()
+
+    monkeypatch.setattr("claude_exit.server.threading.Timer", _SyncTimer)
+
+    _dispatch_terminate(7777)
+
+    assert len(captured_env) == 1
+    env = captured_env[0]
+    assert env["BACKSTOP_PID"] == "7777"
+    assert env["BACKSTOP_EXPECTED"] == "claude --model opus[1m]"
