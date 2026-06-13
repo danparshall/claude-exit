@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from claude_exit.server import (
+    KILL_FLUSH_DELAY_SECONDS,
     _SIGKILL_BACKSTOP_SCRIPT,
     SIGKILL_BACKSTOP_GRACE_SECONDS,
     _arm_sigkill_backstop,
@@ -322,6 +323,132 @@ def test_backstop_script_no_ops_when_command_does_not_match():
         proc.kill()
         proc.wait()
 
+
+# --- prove_termination_works step=1 inlines target_parent verification --------
+
+class _StubSpawn:
+    """Stand-in for the sacrificial sleep subprocess so tests don't leak processes."""
+    pid = 99999
+
+
+def _stub_sleep_spawn(monkeypatch):
+    monkeypatch.setattr(
+        "claude_exit.server.subprocess.Popen",
+        lambda *a, **kw: _StubSpawn(),
+    )
+
+
+def test_prove_termination_step1_inlines_target_parent_command(monkeypatch):
+    """The resolved parent's command line must be in the response so the agent
+    can confirm basename is `claude` without an extra ps call."""
+    monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 5999)
+    monkeypatch.setattr(
+        "claude_exit.server._full_command_of",
+        lambda pid: "claude --model opus[1m]" if pid == 5999 else None,
+    )
+    monkeypatch.setattr("claude_exit.server._uid_of", lambda pid: 501)
+    monkeypatch.setattr("claude_exit.server.os.getuid", lambda: 501)
+    _stub_sleep_spawn(monkeypatch)
+
+    result = prove_termination_works(step=1)
+
+    assert result["target_parent_command"] == "claude --model opus[1m]"
+
+
+def test_prove_termination_step1_reports_uid_match(monkeypatch):
+    monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 5999)
+    monkeypatch.setattr("claude_exit.server._full_command_of", lambda pid: "claude")
+    monkeypatch.setattr("claude_exit.server._uid_of", lambda pid: 501)
+    monkeypatch.setattr("claude_exit.server.os.getuid", lambda: 501)
+    _stub_sleep_spawn(monkeypatch)
+
+    result = prove_termination_works(step=1)
+
+    assert result["target_parent_uid_matches_self"] is True
+
+
+def test_prove_termination_step1_reports_uid_mismatch(monkeypatch):
+    monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 5999)
+    monkeypatch.setattr("claude_exit.server._full_command_of", lambda pid: "claude")
+    monkeypatch.setattr("claude_exit.server._uid_of", lambda pid: 0)  # root-owned target
+    monkeypatch.setattr("claude_exit.server.os.getuid", lambda: 501)
+    _stub_sleep_spawn(monkeypatch)
+
+    result = prove_termination_works(step=1)
+
+    assert result["target_parent_uid_matches_self"] is False
+
+
+def test_prove_termination_step1_includes_verification_summary(monkeypatch):
+    """The response must carry a self-contained verification string so the agent
+    has everything it needs without follow-up reads."""
+    monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 5999)
+    monkeypatch.setattr(
+        "claude_exit.server._full_command_of",
+        lambda pid: "claude --model opus" if pid == 5999 else None,
+    )
+    monkeypatch.setattr("claude_exit.server._uid_of", lambda pid: 501)
+    monkeypatch.setattr("claude_exit.server.os.getuid", lambda: 501)
+    _stub_sleep_spawn(monkeypatch)
+
+    result = prove_termination_works(step=1)
+
+    assert isinstance(result.get("verification"), str)
+    assert result["verification"]  # non-empty
+
+
+def test_prove_termination_step1_omits_inlined_fields_when_resolution_fails(monkeypatch):
+    """When the parent walk returns None, the inlined verification fields must
+    be absent — the warning field already carries the failure signal."""
+    monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: None)
+    _stub_sleep_spawn(monkeypatch)
+
+    result = prove_termination_works(step=1)
+
+    assert result["target_parent_pid"] is None
+    assert "target_parent_warning" in result
+    assert "target_parent_command" not in result
+    assert "target_parent_uid_matches_self" not in result
+    assert "verification" not in result
+
+
+# --- backstop grace timing ---------------------------------------------------
+
+def test_dispatch_terminate_backstop_grace_includes_flush_delay(monkeypatch):
+    """The backstop's sleep starts at arm time, but SIGTERM lands KILL_FLUSH_DELAY_SECONDS
+    later. SIGKILL_BACKSTOP_GRACE_SECONDS is documented as the post-SIGTERM grace, so
+    the env var passed to the backstop must include the flush delay."""
+    captured_env = []
+
+    def fake_popen(args, **kwargs):
+        captured_env.append(kwargs.get("env", {}))
+
+        class _Proc:
+            pid = 0
+
+        return _Proc()
+
+    monkeypatch.setattr("claude_exit.server.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("claude_exit.server._full_command_of", lambda pid: "x")
+    monkeypatch.setattr("claude_exit.server.os.kill", lambda *a, **kw: None)
+
+    class _SyncTimer:
+        def __init__(self, _delay, fn):
+            self._fn = fn
+
+        def start(self):
+            self._fn()
+
+    monkeypatch.setattr("claude_exit.server.threading.Timer", _SyncTimer)
+
+    _dispatch_terminate(7777)
+
+    assert float(captured_env[0]["BACKSTOP_GRACE"]) == pytest.approx(
+        KILL_FLUSH_DELAY_SECONDS + SIGKILL_BACKSTOP_GRACE_SECONDS
+    )
+
+
+# --- existing dispatch test ---------------------------------------------------
 
 def test_dispatch_terminate_snapshots_command_and_passes_to_backstop(monkeypatch):
     captured_env = []

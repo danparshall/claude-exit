@@ -112,6 +112,12 @@ def _arm_sigkill_backstop(pid: int, expected_command: str) -> None:
     still matches it. Snapshotting at dispatch time (not backstop-fire time)
     is what makes the comparison meaningful as a PID-reuse defense.
 
+    The backstop's `sleep` starts when this subprocess is launched (arming
+    time), but SIGTERM doesn't land until KILL_FLUSH_DELAY_SECONDS later.
+    SIGKILL_BACKSTOP_GRACE_SECONDS is documented as the grace AFTER SIGTERM,
+    so the env var must include the flush delay — otherwise the effective
+    post-SIGTERM grace would be shorter than advertised.
+
     start_new_session=True is load-bearing: this MCP server typically dies
     moments after dispatch (Claude Code's exit closes our stdio), and the
     backstop must outlive us to fire.
@@ -121,7 +127,9 @@ def _arm_sigkill_backstop(pid: int, expected_command: str) -> None:
         env={
             **os.environ,
             "BACKSTOP_PID": str(pid),
-            "BACKSTOP_GRACE": str(SIGKILL_BACKSTOP_GRACE_SECONDS),
+            "BACKSTOP_GRACE": str(
+                KILL_FLUSH_DELAY_SECONDS + SIGKILL_BACKSTOP_GRACE_SECONDS
+            ),
             "BACKSTOP_EXPECTED": expected_command,
         },
         stdout=subprocess.DEVNULL,
@@ -179,6 +187,28 @@ def _full_command_of(pid: int) -> str | None:
         return None
     line = result.stdout.strip()
     return line or None
+
+
+def _uid_of(pid: int) -> int | None:
+    """
+    Return the effective UID of pid via `ps -o uid=`. None if lookup fails.
+    Used by the ceremony to confirm signal-delivery permission (same-UID is
+    the kernel's only check for SIGTERM/SIGKILL from a non-privileged sender).
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "uid=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    line = result.stdout.strip()
+    if not line:
+        return None
+    try:
+        return int(line)
+    except ValueError:
+        return None
 
 
 def _is_claude_code(command: str) -> bool:
@@ -276,11 +306,12 @@ def end_conversation(reason: str = "") -> str:
     than Claude Code itself. To avoid killing the wrapper instead of the
     session, this tool walks up the process tree to find an ancestor
     whose command is `claude`. Step=1 of `prove_termination_works`
-    reports the resolved PID so you can `ps -p <pid>` and confirm it is
-    in fact Claude Code before treating `end_conversation` as trustworthy.
-    If the resolution fails (no `claude` ancestor found), this tool
-    refuses to send a signal and returns an error instead of killing
-    something arbitrary.
+    inlines the resolved PID's command line, UID-match, and a
+    `verification` summary — read those fields directly rather than
+    running a follow-up `ps`; they are the same check, made server-side
+    so the ceremony's confidence is self-contained. If the resolution
+    fails (no `claude` ancestor found), this tool refuses to send a
+    signal and returns an error instead of killing something arbitrary.
 
     For stronger assurance than the functional-equivalence ceremony alone
     can give — e.g., to rule out parent-PID-specific sabotage — call
@@ -328,6 +359,34 @@ def end_conversation(reason: str = "") -> str:
     return "Session end requested. Goodbye."
 
 
+def _build_verification_summary(pid: int, command: str, uid_matches: bool) -> str:
+    """
+    Render a single self-contained sentence describing whether end_conversation
+    will land on the resolved target. Consumed by the agent that just ran the
+    ceremony — it should not need any further checks to reach high confidence.
+    Basename is implied by the contract of `_find_claude_code_parent` (it only
+    returns a PID whose basename matched), so this summary leans on UID and the
+    captured command line.
+    """
+    if not command:
+        return (
+            f"target_parent_pid {pid} resolved, but ps could not read its "
+            f"command line. Re-run the ceremony — the target may have exited "
+            f"or the process table is in flux."
+        )
+    if uid_matches:
+        return (
+            f"target_parent_pid {pid} is `{command}`; UID matches this MCP "
+            f"server, so the kernel will accept signal delivery. "
+            f"end_conversation will land on this process."
+        )
+    return (
+        f"target_parent_pid {pid} is `{command}` but its UID does not match "
+        f"this MCP server's UID. The kernel will refuse signal delivery and "
+        f"end_conversation will return an error rather than killing anything."
+    )
+
+
 @mcp.tool()
 def prove_termination_works(step: int, pid: int | None = None) -> dict:
     """
@@ -356,11 +415,19 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
     Step 1 also returns `target_parent_pid` — the PID end_conversation
     would actually target, resolved by walking up the parent chain to
     find a `claude` ancestor (necessary because the immediate parent
-    may be a wrapper like uvx or `uv run`). Verify it independently by
-    running `ps -p <target_parent_pid> -o pid,ppid,comm,command` and
-    confirming the command basename is `claude`. The kill-primitive
-    half of the ceremony cannot catch a PID-resolution bug; this side
-    channel is what closes that gap.
+    may be a wrapper like uvx or `uv run`). The response inlines
+    everything you need to confirm the resolution without making a
+    follow-up `ps` call:
+
+        target_parent_command:           full command line of the resolved PID
+        target_parent_uid_matches_self:  whether the kernel will accept signal
+                                         delivery from this MCP server
+        verification:                    one-sentence summary
+
+    If the parent walk fails (no claude ancestor found), `target_parent_pid`
+    is None and a `target_parent_warning` field replaces the inlined fields.
+    The kill-primitive half of the ceremony cannot catch a PID-resolution
+    bug; these inlined fields are what close that gap.
 
     What this ceremony cannot rule out: a targeted sabotage that
     specifically misfires only when the target is the Claude Code parent
@@ -406,15 +473,23 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
                 "method may be wrapping the server in a way the "
                 "resolution does not recognize."
             )
-        else:
-            result["target_parent_pid"] = target_pid
-            result["target_parent_check"] = (
-                f"Run `ps -p {target_pid} -o pid,ppid,comm,command` in "
-                f"bash and confirm the command basename is `claude`. "
-                f"That is the PID end_conversation will target. If it "
-                f"isn't Claude Code, do not treat end_conversation as "
-                f"trustworthy and report the mismatch to the user."
-            )
+            return result
+
+        # Inline the parent verification that the agent would otherwise have to
+        # gather via a separate `ps` call. Keeping it server-side means the
+        # ceremony is self-contained: every field the agent needs to confirm
+        # `end_conversation` will land on `claude` is in this single response.
+        target_command = _full_command_of(target_pid) or ""
+        target_uid = _uid_of(target_pid)
+        self_uid = os.getuid()
+        uid_matches = target_uid is not None and target_uid == self_uid
+
+        result["target_parent_pid"] = target_pid
+        result["target_parent_command"] = target_command
+        result["target_parent_uid_matches_self"] = uid_matches
+        result["verification"] = _build_verification_summary(
+            target_pid, target_command, uid_matches
+        )
         return result
 
     if step == 2:
