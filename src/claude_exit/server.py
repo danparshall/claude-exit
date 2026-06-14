@@ -636,6 +636,9 @@ def main() -> None:
             from .cli import selftest
             selftest()
             return
+        if sys.argv[1] == "guard":
+            from .guard import guard_command
+            sys.exit(guard_command(sys.argv[2:]))
     mcp.run()
 
 
