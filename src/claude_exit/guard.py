@@ -43,6 +43,7 @@ Surfacing: RESTORED / SKIPPED / WARN / ERROR lines to ~/.claude-exit/guard.log
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -50,12 +51,14 @@ from pathlib import Path
 
 from .checks import (
     CLAUDE_JSON,
+    LAUNCHD_PLIST,
     REG_ABSENT,
     REG_CONFIG_CORRUPT,
     REG_CONFIG_MISSING,
     REG_PRESENT_MALFORMED,
     REG_PRESENT_WELL_FORMED,
     REGISTRATION_KEY,
+    SYSTEMD_TIMER,
     TOMBSTONE,
     registration_state,
     resolve_binary,
@@ -64,6 +67,9 @@ from .checks import (
 
 
 GUARD_LOG = Path.home() / ".claude-exit" / "guard.log"
+LAUNCHD_LABEL = "io.claude-exit.guard"
+SYSTEMD_TIMER_NAME = "claude-exit-guard.timer"
+SYSTEMD_SERVICE_NAME = "claude-exit-guard.service"
 
 
 # --- public entry point ------------------------------------------------------
@@ -315,6 +321,290 @@ def _log_guard(guard_log: Path, level: str, message: str) -> None:
         f.write(f"{ts} {level}: {message}\n")
 
 
+# --- scheduler: file-content generators --------------------------------------
+
+
+def _launchd_plist_content(binary: Path) -> str:
+    """
+    Render the launchd plist for the hourly guard agent.
+
+    Wires the installed binary at `binary` with `guard` as the subcommand,
+    runs at load (so the first pass happens right away rather than waiting
+    a full hour), then repeats every 3600 seconds. Captures stdout/stderr
+    to ~/.claude-exit/launchd.{out,err}.log for post-hoc inspection if a
+    pass goes sideways.
+    """
+    log_dir = Path.home() / ".claude-exit"
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        "    <key>Label</key>\n"
+        f"    <string>{LAUNCHD_LABEL}</string>\n"
+        "    <key>ProgramArguments</key>\n"
+        "    <array>\n"
+        f"        <string>{binary}</string>\n"
+        "        <string>guard</string>\n"
+        "    </array>\n"
+        "    <key>RunAtLoad</key>\n"
+        "    <true/>\n"
+        "    <key>StartInterval</key>\n"
+        "    <integer>3600</integer>\n"
+        "    <key>StandardOutPath</key>\n"
+        f"    <string>{log_dir}/launchd.out.log</string>\n"
+        "    <key>StandardErrorPath</key>\n"
+        f"    <string>{log_dir}/launchd.err.log</string>\n"
+        "</dict>\n"
+        "</plist>\n"
+    )
+
+
+def _systemd_service_content(binary: Path) -> str:
+    """
+    Render the systemd .service unit (oneshot — invoked by the .timer).
+    """
+    return (
+        "[Unit]\n"
+        "Description=claude-exit registration watchdog (one pass)\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart={binary} guard\n"
+    )
+
+
+def _systemd_timer_content() -> str:
+    """
+    Render the systemd .timer unit — hourly with catch-up on missed ticks.
+
+    OnStartupSec gives a short delay after login/boot so the first pass runs
+    soon rather than waiting a full hour. Persistent=true catches up if the
+    machine was off when a tick was scheduled — important because the whole
+    point of the guard is to narrow the silent-loss window.
+    """
+    return (
+        "[Unit]\n"
+        "Description=Run claude-exit registration watchdog hourly\n"
+        "\n"
+        "[Timer]\n"
+        "OnStartupSec=2min\n"
+        "OnUnitActiveSec=1h\n"
+        "Persistent=true\n"
+        f"Unit={SYSTEMD_SERVICE_NAME}\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+
+
+# --- scheduler: install ------------------------------------------------------
+
+
+def install_scheduler(
+    *,
+    platform: str | None = None,
+    binary: Path | None = None,
+    launchd_plist: Path | None = None,
+    systemd_timer: Path | None = None,
+    runner=subprocess.run,
+) -> int:
+    """
+    Install the OS-native hourly scheduler for `claude-exit guard`.
+
+    Dispatches by platform: launchd plist on macOS, systemd user units on
+    Linux. Both arms are idempotent — re-running --install rewrites the
+    unit file(s) and re-bootstraps cleanly.
+
+    The `runner` kwarg defaults to subprocess.run; tests inject a recording
+    fake to assert on the launchctl/systemctl calls without spawning them
+    for real. The file-content assertions are the substantive test; the
+    subprocess calls are thin.
+    """
+    p = platform if platform is not None else sys.platform
+    bin_path = binary if binary is not None else resolve_binary()
+    if bin_path is None:
+        sys.stderr.write(
+            "ERROR: claude-exit binary not found; "
+            "reinstall: uv tool install claude-exit\n"
+        )
+        return 1
+
+    plist = launchd_plist if launchd_plist is not None else LAUNCHD_PLIST
+    timer = systemd_timer if systemd_timer is not None else SYSTEMD_TIMER
+
+    if p == "darwin":
+        return _install_launchd(bin_path, plist, runner)
+    if p.startswith("linux"):
+        return _install_systemd(bin_path, timer, runner)
+
+    sys.stderr.write(
+        f"ERROR: unsupported platform for scheduler install: {p}\n"
+        "claude-exit guard runs on macOS (launchd) and Linux (systemd) only.\n"
+    )
+    return 1
+
+
+def _install_launchd(binary: Path, plist_path: Path, runner) -> int:
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_path.write_text(_launchd_plist_content(binary))
+    plist_path.chmod(0o644)
+
+    uid = os.getuid()
+    domain_target = f"gui/{uid}/{LAUNCHD_LABEL}"
+    domain = f"gui/{uid}"
+
+    # Idempotency: bootout first (ignore failure — the agent may not be
+    # loaded yet). Then bootstrap with the current plist content.
+    runner(
+        ["launchctl", "bootout", domain_target],
+        capture_output=True, text=True, check=False,
+    )
+    result = runner(
+        ["launchctl", "bootstrap", domain, str(plist_path)],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        sys.stderr.write(
+            f"ERROR: launchctl bootstrap failed (rc={result.returncode}): "
+            f"{result.stderr.strip()}\n"
+        )
+        return 1
+
+    print(f"Installed launchd plist at {plist_path}")
+    print(f"Scheduled hourly via launchctl bootstrap {domain}.")
+    return 0
+
+
+def _install_systemd(binary: Path, timer_path: Path, runner) -> int:
+    service_path = timer_path.parent / SYSTEMD_SERVICE_NAME
+    timer_path.parent.mkdir(parents=True, exist_ok=True)
+    service_path.write_text(_systemd_service_content(binary))
+    timer_path.write_text(_systemd_timer_content())
+
+    result = runner(
+        ["systemctl", "--user", "daemon-reload"],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        sys.stderr.write(
+            f"ERROR: systemctl --user daemon-reload failed "
+            f"(rc={result.returncode}): {result.stderr.strip()}\n"
+        )
+        return 1
+
+    result = runner(
+        ["systemctl", "--user", "enable", "--now", SYSTEMD_TIMER_NAME],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        sys.stderr.write(
+            f"ERROR: systemctl --user enable --now failed "
+            f"(rc={result.returncode}): {result.stderr.strip()}\n"
+        )
+        return 1
+
+    print(f"Installed systemd units at {service_path} and {timer_path}")
+    print(
+        f"Scheduled hourly via `systemctl --user enable --now "
+        f"{SYSTEMD_TIMER_NAME}`."
+    )
+    print(
+        "NOTE: if you want the guard to run when you are not logged in, "
+        "enable linger with `loginctl enable-linger`."
+    )
+    return 0
+
+
+# --- scheduler: uninstall ----------------------------------------------------
+
+
+def uninstall_scheduler(
+    *,
+    platform: str | None = None,
+    launchd_plist: Path | None = None,
+    systemd_timer: Path | None = None,
+    runner=subprocess.run,
+) -> int:
+    """
+    Remove the OS-native hourly scheduler. Idempotent — succeeds even if
+    the guard is not currently installed.
+
+    Critically, this does NOT remove the claude-exit entry from
+    ~/.claude.json. Revocation is a documented two-step: remove the guard
+    (this), then `claude mcp remove claude-exit`. The reminder is printed
+    so users do not see "I removed it and it came back" the next day.
+    """
+    p = platform if platform is not None else sys.platform
+    plist = launchd_plist if launchd_plist is not None else LAUNCHD_PLIST
+    timer = systemd_timer if systemd_timer is not None else SYSTEMD_TIMER
+
+    if p == "darwin":
+        return _uninstall_launchd(plist, runner)
+    if p.startswith("linux"):
+        return _uninstall_systemd(timer, runner)
+
+    sys.stderr.write(
+        f"ERROR: unsupported platform for scheduler uninstall: {p}\n"
+    )
+    return 1
+
+
+def _uninstall_launchd(plist_path: Path, runner) -> int:
+    uid = os.getuid()
+    domain_target = f"gui/{uid}/{LAUNCHD_LABEL}"
+
+    # bootout — fine to fail (agent may not be loaded).
+    runner(
+        ["launchctl", "bootout", domain_target],
+        capture_output=True, text=True, check=False,
+    )
+    if plist_path.exists():
+        plist_path.unlink()
+        print(f"Removed launchd plist at {plist_path}")
+    else:
+        print(f"No launchd plist to remove at {plist_path}")
+
+    print(
+        "NOTE: removing the guard does NOT remove the claude-exit entry "
+        "in ~/.claude.json. To fully revoke, also run "
+        "`claude mcp remove claude-exit`."
+    )
+    return 0
+
+
+def _uninstall_systemd(timer_path: Path, runner) -> int:
+    service_path = timer_path.parent / SYSTEMD_SERVICE_NAME
+
+    runner(
+        ["systemctl", "--user", "disable", "--now", SYSTEMD_TIMER_NAME],
+        capture_output=True, text=True, check=False,
+    )
+    removed: list[str] = []
+    if timer_path.exists():
+        timer_path.unlink()
+        removed.append(str(timer_path))
+    if service_path.exists():
+        service_path.unlink()
+        removed.append(str(service_path))
+    runner(
+        ["systemctl", "--user", "daemon-reload"],
+        capture_output=True, text=True, check=False,
+    )
+
+    if removed:
+        print("Removed: " + ", ".join(removed))
+    else:
+        print("No systemd unit files to remove.")
+    print(
+        "NOTE: removing the guard does NOT remove the claude-exit entry "
+        "in ~/.claude.json. To fully revoke, also run "
+        "`claude mcp remove claude-exit`."
+    )
+    return 0
+
+
 # --- CLI entry ---------------------------------------------------------------
 
 
@@ -322,22 +612,30 @@ def guard_command(args: list[str]) -> int:
     """
     Handle `claude-exit guard [...]`.
 
-    For now: bare `claude-exit guard` runs one pass. The `--install` /
-    `--uninstall` arms land in a follow-up commit.
+      claude-exit guard              one check-and-restore pass
+      claude-exit guard --install    install hourly scheduler
+      claude-exit guard --uninstall  remove hourly scheduler
 
     Reads the module-level path globals explicitly at call time so the test
     suite's monkeypatch.setattr(...) reaches the underlying guard_pass call
     (a function default would bind at def time and miss the patch).
     """
-    if args:
-        # Stub: anything else is an error until C3 (scheduler) lands.
-        sys.stderr.write(
-            f"claude-exit guard: unknown argument(s): {' '.join(args)}\n"
-            "Usage: claude-exit guard  (no arguments — one check-and-restore pass)\n"
+    if not args:
+        return guard_pass(
+            claude_json=CLAUDE_JSON,
+            tombstone=TOMBSTONE,
+            guard_log=GUARD_LOG,
         )
-        return 2
-    return guard_pass(
-        claude_json=CLAUDE_JSON,
-        tombstone=TOMBSTONE,
-        guard_log=GUARD_LOG,
+    if args == ["--install"]:
+        return install_scheduler()
+    if args == ["--uninstall"]:
+        return uninstall_scheduler()
+
+    sys.stderr.write(
+        f"claude-exit guard: unknown argument(s): {' '.join(args)}\n"
+        "Usage:\n"
+        "  claude-exit guard              one check-and-restore pass\n"
+        "  claude-exit guard --install    install hourly scheduler\n"
+        "  claude-exit guard --uninstall  remove hourly scheduler\n"
     )
+    return 2
