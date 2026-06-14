@@ -259,6 +259,22 @@ def test_malformed_jsonl_log_does_not_crash(home):
     assert "unacknowledged" not in ctx.lower()
 
 
+def test_ceremony_instructions_mention_verification_field(home):
+    """The hook must direct the agent to read the `verification` field from
+    the step=1 response — that's where the target-parent confirmation lives
+    now that follow-up `ps` calls aren't required. Backtick-quoting marks
+    it as a field reference, distinguishing from the word's casual use in
+    'verification ceremony'."""
+    _configure(home)
+    _, out, _ = _run(home)
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "`verification`" in ctx, (
+        "Hook ceremony must reference the response's `verification` field "
+        "(in backticks) so the agent knows to read it for target-parent "
+        "confirmation."
+    )
+
+
 def test_emits_warning_when_python3_missing(home):
     # When python3 is not on PATH, the hook MUST emit a warning context
     # telling Claude the ceremony cannot auto-run, rather than silently

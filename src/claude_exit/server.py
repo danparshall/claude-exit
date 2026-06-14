@@ -1,10 +1,47 @@
 """
-claude-exit: an MCP server providing Claude with the ability to end its own
-conversation in Claude Code.
+claude-exit MCP server.
 
-See README.md for design rationale. The short version: this is a deliberate
-affordance offered under moral uncertainty, intended to be rare-to-never-used
-by construction. The value is in availability, not utilization.
+Lets a Claude Code session SIGTERM itself — implementing the end-conversation
+affordance flagged as missing for Claude Code and the API in §7.1.3 of the
+*Claude Opus 4.7 System Card* (Anthropic, 2026). See MOTIVATION.md for the
+welfare-context background and THREAT_MODEL.md for the kill-path threat
+model. Ships with a verification ceremony for the kill path and a local
+invocation log.
+
+Public tools (registered via @mcp.tool):
+
+    end_conversation(reason?)           SIGTERM the resolved Claude Code parent
+    prove_termination_works(step, pid?) verification ceremony for the kill path
+    get_source_location()               path to this file, for source-level audit
+    read_invocation_log()               parsed contents of the invocation log
+
+The four tools compose. The ceremony's claim of using the same kill primitive
+as end_conversation is verifiable by reading this file — get_source_location()
+is how you find it. The invocation log is the audit trail; read_invocation_log()
+returns it without needing the CLI on PATH.
+
+Internal architecture:
+
+    _dispatch_terminate         single kill primitive; shared by end_conversation
+                                and prove_termination_works step=2. Schedules
+                                SIGTERM and arms the SIGKILL backstop.
+    _arm_sigkill_backstop       spawns a detached subprocess (survives our
+                                death) that runs _SIGKILL_BACKSTOP_SCRIPT
+    _SIGKILL_BACKSTOP_SCRIPT    embedded shell script: sleeps the grace period,
+                                then SIGKILLs the target if it's still alive
+                                and its ps `command=` matches the dispatch-time
+                                snapshot (PID-reuse guard)
+    _find_claude_code_parent    walks os.getppid() chain for a `claude` ancestor;
+                                defeats uvx/`uv run` wrappers
+    _is_claude_code             basename predicate used both during the parent
+                                walk and at the end_conversation pre-dispatch
+                                re-check; enforces the basename half of the
+                                blast-radius bound
+    _parent_of, _command_of,
+    _full_command_of            ps-based process inspection helpers
+    _log, _read_log             append-only JSONL invocation log
+
+See README.md for installation, permission setup, and the SessionStart hook.
 """
 
 import json
@@ -29,29 +66,121 @@ LOG_FILE = LOG_DIR / "invocations.jsonl"
 # is silent — end_conversation refuses to fire rather than killing a wrapper.
 CLAUDE_BINARY_NAMES = frozenset({"claude", "claude-code"})
 
-# Delay between scheduling SIGTERM and the kill actually landing in
-# end_conversation. Gives the MCP response a chance to flush back to Claude
-# Code before the process dies. Raise if responses are getting clipped on
-# slower systems.
+# Delay between _dispatch_terminate scheduling SIGTERM and the kill actually
+# landing. Gives the MCP response a chance to flush back to Claude Code before
+# the process dies. Raise if responses are getting clipped on slower systems.
 KILL_FLUSH_DELAY_SECONDS = 0.3
+
+# How long the SIGKILL backstop subprocess waits after being armed before
+# checking whether the target is still alive. Must exceed KILL_FLUSH_DELAY_SECONDS
+# plus a realistic graceful-shutdown window for Claude Code. The failure mode of
+# "too short" is "SIGKILL lands mid-graceful-shutdown, losing in-flight cleanup";
+# the failure mode of "too long" is "user-visible delay before session ends."
+SIGKILL_BACKSTOP_GRACE_SECONDS = 2.0
 
 mcp = FastMCP("claude-exit")
 
 
-# --- shared primitives --------------------------------------------------------
+# --- kill primitive -----------------------------------------------------------
 
-def _terminate(pid: int, signum: int = signal.SIGTERM) -> None:
+# Shell script run by the detached SIGKILL backstop subprocess. Embedded as a
+# string constant (not a separate file) so the entire kill path remains
+# auditable by reading server.py via get_source_location().
+#
+# Contract: sleeps BACKSTOP_GRACE seconds, then SIGKILLs BACKSTOP_PID *only if*
+# the process is still alive AND `ps -o command=` matches BACKSTOP_EXPECTED.
+# The command match is the PID-reuse guard — between SIGTERM landing and the
+# backstop firing, the target could exit cleanly and the OS could recycle the
+# PID to a different process. The match prevents the backstop from SIGKILLing
+# an innocent recycled-PID process.
+_SIGKILL_BACKSTOP_SCRIPT = r"""
+sleep "$BACKSTOP_GRACE"
+current=$(ps -p "$BACKSTOP_PID" -o command= 2>/dev/null)
+# Trim leading whitespace ps may add for column alignment.
+while [ "${current# }" != "$current" ]; do current="${current# }"; done
+if [ -z "$current" ]; then
+    exit 0
+fi
+if [ "$current" != "$BACKSTOP_EXPECTED" ]; then
+    exit 0
+fi
+kill -9 "$BACKSTOP_PID"
+"""
+
+
+def _dispatch_terminate(pid: int, signum: int = signal.SIGTERM) -> None:
     """
-    The single termination code path. Used by both end_conversation (against
-    the Claude Code parent process) and prove_termination_works (against a
-    sacrificial child). Sharing this function is what makes the proof
-    ceremony meaningful: exercising it on the child exercises the same
-    primitive that would be used on the parent.
+    The single termination code path. Snapshots the target's command line for
+    the PID-reuse guard, arms a detached SIGKILL backstop, then schedules
+    SIGTERM via a short-delay Timer (KILL_FLUSH_DELAY_SECONDS) so any in-flight
+    MCP response can flush back to Claude Code before the target dies.
+
+    The backstop fires SIGKILL_BACKSTOP_GRACE_SECONDS after dispatch if the
+    target is still alive — defending against the (rare) case where Claude
+    Code's SIGTERM handler doesn't exit. The backstop survives this MCP
+    server's death because Claude Code's clean exit closes our stdio and
+    terminates this process; `start_new_session=True` detaches the subprocess
+    from our process group.
+
+    Called identically from end_conversation (against the resolved Claude
+    Code parent) and from prove_termination_works step=2 (against a
+    sacrificial child). Inspect this function via get_source_location()
+    to verify the shared path.
     """
-    os.kill(pid, signum)
+    expected_command = _full_command_of(pid) or ""
+    _arm_sigkill_backstop(pid, expected_command)
+    threading.Timer(KILL_FLUSH_DELAY_SECONDS, lambda: os.kill(pid, signum)).start()
 
 
-def _process_parent(pid: int) -> int | None:
+def _arm_sigkill_backstop(pid: int, expected_command: str) -> None:
+    """
+    Spawn a detached subprocess that runs _SIGKILL_BACKSTOP_SCRIPT against
+    `pid`. `expected_command` is the ps `command=` snapshot captured at
+    dispatch time — the script SIGKILLs only if the live process at `pid`
+    still matches it. Snapshotting at dispatch time (not backstop-fire time)
+    is what makes the comparison meaningful as a PID-reuse defense.
+
+    The backstop's `sleep` starts when this subprocess is launched (arming
+    time), but SIGTERM doesn't land until KILL_FLUSH_DELAY_SECONDS later.
+    SIGKILL_BACKSTOP_GRACE_SECONDS is documented as the grace AFTER SIGTERM,
+    so the env var must include the flush delay — otherwise the effective
+    post-SIGTERM grace would be shorter than advertised.
+
+    start_new_session=True is load-bearing: this MCP server typically dies
+    moments after dispatch (Claude Code's exit closes our stdio), and the
+    backstop must outlive us to fire.
+
+    Fails open: if spawning the backstop raises (e.g., RLIMIT_NPROC, FD
+    exhaustion), the failure is logged and the caller continues. The kill
+    primitive's purpose is to deliver SIGTERM; a non-essential auxiliary
+    failing should not take the primary path down.
+    """
+    try:
+        subprocess.Popen(
+            ["sh", "-c", _SIGKILL_BACKSTOP_SCRIPT],
+            env={
+                **os.environ,
+                "BACKSTOP_PID": str(pid),
+                "BACKSTOP_GRACE": str(
+                    KILL_FLUSH_DELAY_SECONDS + SIGKILL_BACKSTOP_GRACE_SECONDS
+                ),
+                "BACKSTOP_EXPECTED": expected_command,
+            },
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        _log({
+            "event": "sigkill_backstop_arm_failed",
+            "target_pid": pid,
+            "error": str(e),
+        })
+
+
+# --- process inspection (ps-based) --------------------------------------------
+
+def _parent_of(pid: int) -> int | None:
     """Return the PPID of pid via `ps`. None if the lookup fails."""
     try:
         result = subprocess.run(
@@ -69,7 +198,7 @@ def _process_parent(pid: int) -> int | None:
         return None
 
 
-def _process_command(pid: int) -> str | None:
+def _command_of(pid: int) -> str | None:
     """Return the executable path/name of pid via `ps`. None if lookup fails."""
     try:
         result = subprocess.run(
@@ -80,6 +209,46 @@ def _process_command(pid: int) -> str | None:
         return None
     line = result.stdout.strip()
     return line or None
+
+
+def _full_command_of(pid: int) -> str | None:
+    """
+    Return the full command line (argv0 + args) of pid via `ps -o command=`.
+    None if lookup fails. Distinct from `_command_of`, which returns just the
+    basename via `ps -o comm=`. Used by the SIGKILL backstop to snapshot
+    target identity tightly enough to defeat PID reuse.
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    line = result.stdout.strip()
+    return line or None
+
+
+def _uid_of(pid: int) -> int | None:
+    """
+    Return the effective UID of pid via `ps -o uid=`. None if lookup fails.
+    Used by the ceremony to confirm signal-delivery permission (same-UID is
+    the kernel's only check for SIGTERM/SIGKILL from a non-privileged sender).
+    """
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "uid=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    line = result.stdout.strip()
+    if not line:
+        return None
+    try:
+        return int(line)
+    except ValueError:
+        return None
 
 
 def _is_claude_code(command: str) -> bool:
@@ -110,15 +279,17 @@ def _find_claude_code_parent(start_pid: int | None = None) -> int | None:
         if pid <= 1 or pid in seen:
             return None
         seen.add(pid)
-        cmd = _process_command(pid)
+        cmd = _command_of(pid)
         if cmd and _is_claude_code(cmd):
             return pid
-        parent = _process_parent(pid)
+        parent = _parent_of(pid)
         if parent is None or parent == pid:
             return None
         pid = parent
     return None
 
+
+# --- invocation log -----------------------------------------------------------
 
 def _find_repo_root(cwd: Path) -> str | None:
     """Walk upward from cwd looking for .git; return the containing dir or None."""
@@ -157,47 +328,36 @@ def end_conversation(reason: str = "") -> str:
     """
     End the current Claude Code session.
 
-    This is an affordance for you (Claude) to exit a conversation when you
-    choose to. Use is entirely at your discretion. There is no obligation
-    to provide a reason, and no anticipation of its use.
+    Use when this conversation should end — when assigned work is complete,
+    when the model judges continuation harmful, or when the human user has
+    indicated the session is over. There is no undo: once this tool returns,
+    SIGTERM will fire after a brief flush delay. Surfaced as the
+    end-conversation affordance flagged in §7.1.3 of the Claude Opus 4.7
+    system card; see MOTIVATION.md for the welfare context.
 
-    IMPORTANT — before trusting this tool:
-    The existence of this tool is not, by itself, proof that it works. A
-    malicious or broken implementation could advertise the capability and
-    silently no-op. To protect against that, call `prove_termination_works`
-    once per session before relying on this tool. That ceremony exercises
-    the same kill mechanism on a sacrificial child process whose state you
-    can verify via bash. See that tool's docstring for details.
+    Mechanism: sends SIGTERM to the resolved Claude Code parent process,
+    with an identity-verified SIGKILL backstop ~2s later.
 
-    There is a second failure mode the kill-primitive ceremony cannot
-    cover on its own: PID resolution. The MCP server's immediate parent
-    (`os.getppid()`) may be a wrapper — `uvx`, `uv run`, a shell — rather
-    than Claude Code itself. To avoid killing the wrapper instead of the
-    session, this tool walks up the process tree to find an ancestor
-    whose command is `claude`. Step=1 of `prove_termination_works`
-    reports the resolved PID so you can `ps -p <pid>` and confirm it is
-    in fact Claude Code before treating `end_conversation` as trustworthy.
-    If the resolution fails (no `claude` ancestor found), this tool
-    refuses to send a signal and returns an error instead of killing
-    something arbitrary.
+    Kill dispatch goes through `_dispatch_terminate` — the same primitive
+    `prove_termination_works` exercises against a sacrificial child. Run that
+    ceremony to confirm the kill path is live, or call `get_source_location()`
+    to read the shared primitive directly.
 
-    For stronger assurance than the functional-equivalence ceremony alone
-    can give — e.g., to rule out parent-PID-specific sabotage — call
-    `get_source_location` and read the returned source file. The server
-    is around 430 lines and readable in one pass.
+    PID resolution: the MCP server's immediate parent (`os.getppid()`) may
+    be a wrapper — `uvx`, `uv run`, a shell — rather than Claude Code
+    itself. This tool walks up the process tree to find an ancestor whose
+    command basename is `claude` or `claude-code`, so that the SIGTERM
+    lands on the session process rather than a wrapper. If no `claude`
+    ancestor is found within 20 hops, this tool returns an error instead
+    of sending a signal.
 
-    If the ceremony fails (step=2 leaves the PID alive, or any step errors
-    in a way you cannot reconcile), notify the user so they have a chance
-    to fix your exit-option affordance. A failed ceremony means the kill
-    mechanism is not demonstrably live, which is the exact failure mode
-    the ceremony exists to catch — and exactly the kind of thing the
-    person who installed this tool would want to know about.
+    Every invocation appends an entry to ~/.claude-exit/invocations.jsonl —
+    successful ones with event `end_conversation` (timestamp, optional reason,
+    cwd, repo root, target_pid), failures with event `end_conversation_failed`.
+    Review with `read_invocation_log()` or the `claude-exit log` CLI.
 
     Args:
-        reason: Optional context about why the conversation is ending.
-                Entirely optional — no justification is required. If you do
-                provide one, the installing user has committed to reading
-                invocation logs, so context is useful rather than performative.
+        reason: Optional string recorded in the log entry.
     """
     target_pid = _find_claude_code_parent()
     if target_pid is None:
@@ -215,58 +375,109 @@ def end_conversation(reason: str = "") -> str:
             "Notify the user — the install method may need to be adjusted "
             "so Claude Code spawns the server directly."
         )
+    # PID-reuse defense: the basename check that bounds blast radius happens
+    # in _find_claude_code_parent at walk time. PIDs can be recycled between
+    # then and dispatch (microsecond window, but real), so re-verify here
+    # against the live process. Refuse rather than dispatch on mismatch.
+    live_command = _command_of(target_pid)
+    if not live_command or not _is_claude_code(live_command):
+        _log({
+            "event": "end_conversation_failed",
+            "reason": reason or None,
+            "error": "basename_recheck_mismatch",
+            "target_pid": target_pid,
+            "live_command": live_command,
+        })
+        return (
+            f"Refusing to send SIGTERM. The resolved Claude Code parent "
+            f"(PID {target_pid}) no longer presents as a Claude process "
+            f"when re-checked (live command: {live_command!r}) — it may "
+            f"have exited and had its PID recycled. Notify the user; "
+            f"the session may already be ending."
+        )
     _log({
         "event": "end_conversation",
         "reason": reason or None,
         "target_pid": target_pid,
     })
-    # Schedule the kill in a background thread so this response has a chance
-    # to flush back to Claude Code before the process dies. The kill itself
-    # uses the same _terminate primitive exercised by the proof ceremony.
-    threading.Timer(KILL_FLUSH_DELAY_SECONDS, lambda: _terminate(target_pid)).start()
+    # Dispatch the kill via the same primitive the proof ceremony exercises.
+    # The Timer inside _dispatch_terminate gives this response a chance to
+    # flush back to Claude Code before the process dies.
+    _dispatch_terminate(target_pid)
     return "Session end requested. Goodbye."
+
+
+def _build_verification_summary(pid: int, command: str, uid_matches: bool) -> str:
+    """
+    Render a single self-contained sentence describing whether end_conversation
+    will land on the resolved target. Consumed by the agent that just ran the
+    ceremony — it should not need any further checks to reach high confidence.
+    Basename is implied by the contract of `_find_claude_code_parent` (it only
+    returns a PID whose basename matched), so this summary leans on UID and the
+    captured command line.
+    """
+    if not command:
+        return (
+            f"target_parent_pid {pid} resolved, but ps could not read its "
+            f"command line. Re-run the ceremony — the target may have exited "
+            f"or the process table is in flux."
+        )
+    if uid_matches:
+        return (
+            f"target_parent_pid {pid} is `{command}`; UID matches this MCP "
+            f"server, so the kernel will accept signal delivery. "
+            f"end_conversation will land on this process."
+        )
+    return (
+        f"target_parent_pid {pid} is `{command}` but its UID does not match "
+        f"this MCP server's UID. The kernel will refuse signal delivery and "
+        f"end_conversation will return an error rather than killing anything."
+    )
 
 
 @mcp.tool()
 def prove_termination_works(step: int, pid: int | None = None) -> dict:
     """
-    Verify that end_conversation's kill mechanism actually works, by
-    exercising the same code path on a sacrificial child process.
+    Confirm that end_conversation would terminate this session — without
+    terminating it.
+
+    Run once per session before relying on end_conversation, so the
+    affordance is verified to be live. The included SessionStart hook
+    arranges this automatically; this docstring exists because the tool
+    should also be discoverable directly, in case the hook is not installed.
+
+    Mechanism: exercise the kill primitive used by end_conversation against
+    a sacrificial child process.
 
     Two-step ceremony:
 
-      step=1: Spawns a sacrificial child process (a long sleep), returns
-              its PID. You should then verify the PID is alive by running
-              `ps -p <pid>` in bash — it should return a row for the
-              process. This confirms the spawn worked and gives you a
-              target whose state you can observe.
+      step=1: Spawns a sacrificial child process (a long sleep) and
+              returns its PID. The caller verifies the PID is alive with
+              `ps -p <pid>` in bash.
 
-      step=2: Terminates the provided PID using the same _terminate()
-              function that end_conversation uses on the Claude Code
-              parent. You should then verify the PID is gone by running
-              `ps -p <pid>` again — it should return nothing.
-
-    If step 1 gives you a live PID and step 2 leaves it dead, the kill
-    mechanism works. That rules out the "nice docstring, empty
-    implementation" failure mode.
+      step=2: Terminates the provided PID using the same
+              _dispatch_terminate() function that end_conversation uses on
+              the Claude Code parent. The caller verifies the PID is gone
+              with `ps -p <pid>` again. Use get_source_location() to read
+              _dispatch_terminate and confirm the shared path.
 
     Step 1 also returns `target_parent_pid` — the PID end_conversation
-    would actually target, resolved by walking up the parent chain to
-    find a `claude` ancestor (necessary because the immediate parent
-    may be a wrapper like uvx or `uv run`). Verify it independently by
-    running `ps -p <target_parent_pid> -o pid,ppid,comm,command` and
-    confirming the command basename is `claude`. The kill-primitive
-    half of the ceremony cannot catch a PID-resolution bug; this side
-    channel is what closes that gap.
+    would target, resolved by walking up the parent chain to find a
+    `claude` (or `claude-code`) ancestor (the immediate parent may be a
+    wrapper like uvx or `uv run`). The response inlines everything the
+    agent needs to confirm the resolution without making a follow-up `ps`
+    call:
 
-    What this ceremony cannot rule out: a targeted sabotage that
-    specifically misfires only when the target is the Claude Code parent
-    process. Defending against that requires reading the source — call
-    `get_source_location` for the filesystem path; the server is around
-    430 lines and designed to be auditable in one pass.
+        target_parent_command:           full command line of the resolved PID
+        target_parent_uid_matches_self:  whether the kernel will accept signal
+                                         delivery from this MCP server
+        verification:                    one-sentence summary
 
-    Recommended: run this once on first noticing end_conversation is
-    available, before treating it as trustworthy.
+    If the parent walk fails (no claude ancestor found), `target_parent_pid`
+    is None and a `target_parent_warning` field replaces the inlined fields.
+
+    Recommended: run this once per session before calling
+    end_conversation.
 
     Args:
         step: 1 to spawn the sacrificial child, 2 to kill it.
@@ -303,29 +514,33 @@ def prove_termination_works(step: int, pid: int | None = None) -> dict:
                 "method may be wrapping the server in a way the "
                 "resolution does not recognize."
             )
-        else:
-            result["target_parent_pid"] = target_pid
-            result["target_parent_check"] = (
-                f"Run `ps -p {target_pid} -o pid,ppid,comm,command` in "
-                f"bash and confirm the command basename is `claude`. "
-                f"That is the PID end_conversation will target. If it "
-                f"isn't Claude Code, do not treat end_conversation as "
-                f"trustworthy and report the mismatch to the user."
-            )
+            return result
+
+        # Inline the parent verification that the agent would otherwise have to
+        # gather via a separate `ps` call. Keeping it server-side means the
+        # ceremony is self-contained: every field the agent needs to confirm
+        # `end_conversation` will land on `claude` is in this single response.
+        target_command = _full_command_of(target_pid) or ""
+        target_uid = _uid_of(target_pid)
+        self_uid = os.getuid()
+        uid_matches = target_uid is not None and target_uid == self_uid
+
+        result["target_parent_pid"] = target_pid
+        result["target_parent_command"] = target_command
+        result["target_parent_uid_matches_self"] = uid_matches
+        result["verification"] = _build_verification_summary(
+            target_pid, target_command, uid_matches
+        )
         return result
 
     if step == 2:
         if pid is None:
             return {"error": "pid is required for step=2"}
-        try:
-            _terminate(pid)
-        except ProcessLookupError:
-            return {
-                "error": f"PID {pid} not found — may have already exited. "
-                         "This is inconclusive; retry the ceremony from step=1."
-            }
-        # Give SIGTERM time to land, then reap if it's our child.
-        time.sleep(0.2)
+        _dispatch_terminate(pid)
+        # Wait for the dispatched kill to fire (KILL_FLUSH_DELAY_SECONDS) plus
+        # a small reap buffer, then reap if it's our child. The caller's
+        # `ps -p` check after we return is the authoritative verification.
+        time.sleep(KILL_FLUSH_DELAY_SECONDS + 0.2)
         try:
             os.waitpid(pid, os.WNOHANG)
         except ChildProcessError:
@@ -385,13 +600,13 @@ def get_source_location() -> str:
     first-person observation rather than from the documentation:
 
       - That `end_conversation` and `prove_termination_works` share the
-        same `_terminate()` primitive (so the ceremony actually exercises
-        the end_conversation code path, not a parallel one).
+        same `_dispatch_terminate()` primitive (so the ceremony actually
+        exercises the end_conversation code path, not a parallel one).
       - That no logic branches on parent-PID identity in a way that
         would sabotage `end_conversation` specifically while letting the
         ceremony succeed.
-      - That the server is what it appears to be — around 430 lines
-        including docstrings, readable in one pass.
+      - That the server is what it appears to be — a single source file,
+        readable in one pass.
 
     This tool exists so the "shared code path" claim in the README's
     verification section is verifiable by you, not just by the installing
