@@ -1,5 +1,6 @@
 # Dev-only notes, not for end users
 TESTING.md
+LOCAL_INSTALL.md
 
 # Python
 __pycache__/

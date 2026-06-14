@@ -92,4 +92,4 @@ no tombstone) → loud message; tombstone → silent; no state dir → silent; c
 → gated transition → naming line; first run (no last_state.json) → no transition
 line; unwritable state dir → context still emitted.
 
-**Version:** part of v1.1.0 with #1 and #3.
+**Version:** part of v1.2.0 with #1 and #3. (v1.1.0 shipped the port-iso safety track instead; consent-persistence retargets to the next minor.)

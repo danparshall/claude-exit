@@ -74,7 +74,7 @@ orphan warning without deleting their invocation history.
 | 4 | README/docs work (no plan file; tracked in issue) | #4 | lands with/after 1–3 |
 | 5 | Upstream report to anthropics/claude-code (tracked in issue) | #5 | needs details from Kornai's machine; **filing is outward-facing — Dan's go-ahead required** |
 
-Suggested release: all of 1–4 as **v1.1.0**.
+Suggested release: all of 1–4 as **v1.2.0** (v1.1.0 shipped the port-iso safety track instead).
 
 ## Complexity budget (hold this line)
 

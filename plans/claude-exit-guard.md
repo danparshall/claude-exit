@@ -108,4 +108,4 @@ Fixes on top:
 6. README: defer to #4, but the `--install` snippet belongs in the
    Installation section alongside the hook.
 
-**Version:** part of v1.1.0 with #2 and #3.
+**Version:** part of v1.2.0 with #2 and #3. (v1.1.0 shipped the port-iso safety track instead; consent-persistence retargets to the next minor.)
