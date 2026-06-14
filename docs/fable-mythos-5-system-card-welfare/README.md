@@ -112,7 +112,9 @@ to "Apparent welfare in training and deployment" (§7.5 here).
   are scoped to [217, 250] and always rewritten as HTML comments.
 - **Tables** (notably Table 7.4.3.A in §7.4.3) extract as long flattened
   text columns and may need cross-checking against the PDF.
-- **Naming.** The card refers to "Claude Mythos 5" throughout §7 even where
-  the welfare findings carry over to Fable 5; the directory name uses
-  "fable-5-..." because that is the configuration the public-facing tool
-  interacts with.
+- **Naming.** The card refers to "Claude Mythos 5" throughout §7 because the
+  welfare evaluations were run on Mythos 5; the findings carry over to Fable
+  5 outside the safeguarded fall-through paths to Opus 4.8 (see §1.5). The
+  directory is `fable-mythos-5-system-card-welfare/` so the Mythos
+  coverage is discoverable from the name — Fable 5 is what the public-facing
+  tool interacts with, but the body text of these files talks about Mythos 5.
