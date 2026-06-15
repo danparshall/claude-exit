@@ -2,6 +2,9 @@
 TESTING.md
 LOCAL_INSTALL.md
 
+# Git worktrees
+.worktrees/
+
 # Python
 __pycache__/
 *.py[cod]
