@@ -629,13 +629,16 @@ def get_source_location() -> str:
 def main() -> None:
     if len(sys.argv) > 1:
         if sys.argv[1] == "log":
-            from .cli import log_command
-            log_command(sys.argv[2:])
+            from .cli import GUARD_LOG_PATH, log_command
+            log_command(sys.argv[2:], guard_log_path=GUARD_LOG_PATH)
             return
         if sys.argv[1] == "selftest":
             from .cli import selftest
             selftest()
             return
+        if sys.argv[1] == "guard":
+            from .guard import guard_command
+            sys.exit(guard_command(sys.argv[2:]))
     mcp.run()
 
 
