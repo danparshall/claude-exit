@@ -643,6 +643,9 @@ def main() -> None:
         if sys.argv[1] == "guard":
             from .guard import guard_command
             sys.exit(guard_command(sys.argv[2:]))
+        if sys.argv[1] == "doctor":
+            from .doctor import doctor_command
+            sys.exit(doctor_command(sys.argv[2:]))
     mcp.run()
 
 

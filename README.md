@@ -400,6 +400,32 @@ review.
 The `event: "selftest"` field distinguishes these from real invocations
 later, so you can filter them out when analyzing the log.
 
+### Checking the install
+
+```bash
+claude-exit doctor
+```
+
+One-shot pure-read audit of every artifact the consent architecture
+depends on — python3, binary on PATH, `~/.claude.json` registration,
+permission state (neutral report: gated vs. pre-approved — both are
+legitimate), SessionStart hook file + settings registration, guard
+scheduler (both file-on-disk *and* an authoritative `launchctl` /
+`systemctl` check), guard.log heartbeat, state-dir health, an
+end-to-end kill-primitive exercise against a sacrificial child, and
+a hook↔server version handshake. One line per check with a `fix:`
+continuation for anything actionable; exits 0 if nothing is `[WARN]`
+or `[MISSING]`, else 1 (scriptable).
+
+Run it whenever a session behaves unexpectedly, or on schedule if
+you like. Complementary to `selftest`: **`selftest` exercises the
+review loop** (so you'll notice invocations when they happen);
+**`doctor` audits the wiring** (so the components can't silently
+drift out of place without you seeing it). No writes, no network,
+no `--fix` flag — restoration of the one entropy-owned artifact
+lives in `claude-exit guard`; everything else that's actionable is
+a human decision.
+
 ### Reviewing the log
 
 ```bash
