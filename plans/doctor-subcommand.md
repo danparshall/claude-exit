@@ -8,14 +8,15 @@ on and prints what it found, with a fix line for anything missing.
 **Issue:** #3
 **Overview / design principles:** [consent-persistence-overview.md](consent-persistence-overview.md)
 **Originating conversation:** 2026-06-12 session with Dan (summary in overview doc).
-**Confidence:** High. Pure reads wrapping `checks.py` from the guard plan.
+**Confidence:** High. Checks 1–7 are pure reads wrapping `checks.py` from the guard plan; check #8 (operational verification) spawns a sacrificial process via `prove_termination_works` — the primitive already exists, small wiring risk only.
 
 **Branch:** `doctor-subcommand` (suggested). Depends on `checks.py` from
 #1 — implement after it, or land `checks.py` first if reordered.
 
 ## Behavior
 
-`claude-exit doctor` — pure read, no writes, no network. Prints one line per check
+`claude-exit doctor` — no filesystem writes, no network (check #8 spawns and reaps a
+sacrificial child process; no persistent state). Prints one line per check
 (OK / MISSING / WARN / INFO) plus a fix line for anything actionable. Exit 0 if
 nothing MISSING/WARN, else 1 (scriptable).
 
@@ -48,6 +49,22 @@ Checks, in dependency order:
 7. **State dir** — `~/.claude-exit/` health: invocations.jsonl parseable (count bad
    lines), unacknowledged event count (merged stream, per guard plan), tombstone
    presence (INFO: "uninstall marker present — hook orphan warnings suppressed").
+8. **Operational verification** — closes GPT-5 Codex review finding #3 on
+   `drop_of_water` v1.1 (`docs/fable-5-drop-of-water/review_openai_gpt5_codex.md`):
+   *"the guard only checks whether a `claude-exit` key exists in `mcpServers`;
+   it does not check whether the command path still exists or whether the server
+   still connects."* This is what closes the "registered ≠ operational" gap.
+   Invoke `prove_termination_works` step 1 → verify child alive → step 2 → verify
+   child gone. Distinct failure modes to name: MCP server unloadable, binary
+   crashes on startup, `_dispatch_terminate` blocked (permissions/signal
+   restrictions), UID mismatch, parent-walk fails to resolve a `claude` ancestor.
+   Lives in `doctor.py` not `checks.py` (checks.py stays pure-read predicates;
+   this one spawns a subprocess). Result still shaped
+   `(status, message, fix_line | None)` for uniform formatting. Confirm at
+   implementation time that `prove_termination_works` does not append to
+   `invocations.jsonl` — current `end_conversation` docstring implies only
+   end_conversation writes there, but verify before shipping so doctor stays
+   read-only from the log's perspective.
 
 ## Implementation steps
 
