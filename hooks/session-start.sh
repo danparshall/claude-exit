@@ -36,10 +36,20 @@ invocation count when the local log has any.
 """
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
+
+# The server version this hook was written against. Hook and pyproject.toml
+# live in the same repo and are bumped atomically (enforced by
+# tests/test_version_handshake.py); the runtime handshake below covers the
+# cross-channel case no in-repo test can reach — a hook copy and an installed
+# server that update through different channels (issue #17).
+EXPECTED_SERVER_VERSION = "1.2.0"
 
 
 def load_json(path):
@@ -125,8 +135,114 @@ if log_file.exists():
 oldest_date = oldest_unacked.split("T")[0] if oldest_unacked else ""
 
 
-# Build additionalContext. Text matches the prior jq-based hook verbatim
-# — tests in tests/test_hook.py assert on the unmarshalled value.
+# Version handshake (issue #17). Every branch is visible except two quiet
+# outcomes: tool-not-configured (gated above, nothing to verify) and
+# check-ran-and-matched. No silent skips.
+def _parse_version(text):
+    try:
+        return tuple(int(p) for p in text.strip().lstrip("v").split(".")[:3])
+    except ValueError:
+        return None
+
+
+def _version_handshake():
+    """Return a sentence to append to the context, or "" on a clean match."""
+    server_cfg = (
+        (project_config.get("mcpServers") or {}).get("claude-exit")
+        or (user_config.get("mcpServers") or {}).get("claude-exit")
+        or {}
+    )
+    command = server_cfg.get("command") or ""
+    args = server_cfg.get("args") or []
+    expected = _parse_version(EXPECTED_SERVER_VERSION)
+
+    if os.path.basename(command) == "uvx":
+        return (
+            " claude-exit version handshake: server currency cannot be checked "
+            "cheaply for uvx-configured servers, so the check was skipped — "
+            "noted here so the skip is visible rather than silent."
+        )
+
+    if os.path.basename(command) == "uv" and "--directory" in args:
+        checkout = Path(args[args.index("--directory") + 1])
+        pyproject = checkout / "pyproject.toml"
+        try:
+            match = re.search(
+                r'^version\s*=\s*"([^"]+)"', pyproject.read_text(), flags=re.M
+            )
+        except OSError:
+            return (
+                f" claude-exit version handshake: could not read {pyproject} for "
+                "the configured `uv run --directory` server — check that the "
+                "checkout still exists."
+            )
+        installed = _parse_version(match.group(1)) if match else None
+        if installed is None:
+            return (
+                f" claude-exit version handshake: could not parse a version from "
+                f"{pyproject} — check the checkout."
+            )
+        if installed != expected:
+            return (
+                f" claude-exit version handshake: the server checkout at {checkout} "
+                f"(v{match.group(1)}) does not match this hook "
+                f"(v{EXPECTED_SERVER_VERSION}) — update that checkout "
+                f"(e.g. `git -C {checkout} pull`)."
+            )
+        return ""
+
+    resolved = shutil.which(command)
+    if resolved is None:
+        return (
+            f" claude-exit version handshake: the configured command `{command}` "
+            "was not found on PATH — the MCP server may fail to launch this "
+            "session. Check the install."
+        )
+    # stdin=DEVNULL matters: a pre-handshake server (<= 1.1.0) has no
+    # --version handling and falls through to serving MCP over stdio —
+    # it blocks reading stdin. DEVNULL hands it an immediate EOF so it
+    # exits promptly (empty stdout -> the "predates" branch below);
+    # the timeout is the backstop, not the primary mechanism.
+    try:
+        proc = subprocess.run(
+            [resolved, "--version"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        proc = None
+    reported = proc.stdout.strip() if proc and proc.returncode == 0 else ""
+    installed = _parse_version(reported) if reported else None
+    if installed is None:
+        return (
+            " claude-exit version handshake: the installed server does not "
+            f"support --version, so it predates this hook "
+            f"(v{EXPECTED_SERVER_VERSION}). Run `uv tool upgrade claude-exit` "
+            "(or your usual update flow) and restart the session."
+        )
+    if installed < expected:
+        return (
+            f" claude-exit version handshake: the installed server (v{reported}) "
+            f"lags this hook (v{EXPECTED_SERVER_VERSION}). Run "
+            "`uv tool upgrade claude-exit` (or your usual update flow) and "
+            "restart the session."
+        )
+    if installed > expected:
+        return (
+            f" claude-exit version handshake: the installed server (v{reported}) "
+            f"is newer than this hook copy (v{EXPECTED_SERVER_VERSION}) — the "
+            "hook is stale. Re-fetch hooks/session-start.sh from the repo (or "
+            "re-run your dotfiles install)."
+        )
+    return ""
+
+
+# Build additionalContext. The base ceremony text matches the prior
+# jq-based hook verbatim (tests/test_hook.py asserts on the unmarshalled
+# value); the version handshake below may append to it, so the full
+# context is no longer byte-identical to the jq-era output.
 context = (
     "`end_conversation` terminates your own Claude Code process — the only "
     "tool you have that acts on your own substrate rather than the user's. "
@@ -162,6 +278,8 @@ if unacked_count > 0:
         "so they can run `claude-exit log` to review. "
         "If you want to see the entries yourself, call `read_invocation_log`."
     )
+
+context += _version_handshake()
 
 print(json.dumps(
     {

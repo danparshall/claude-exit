@@ -628,6 +628,10 @@ def get_source_location() -> str:
 
 def main() -> None:
     if len(sys.argv) > 1:
+        if sys.argv[1] == "--version":
+            from importlib.metadata import version
+            print(version("claude-exit"))
+            return
         if sys.argv[1] == "log":
             from .cli import GUARD_LOG_PATH, log_command
             log_command(sys.argv[2:], guard_log_path=GUARD_LOG_PATH)

@@ -65,6 +65,16 @@ Checks, in dependency order:
    `invocations.jsonl` — current `end_conversation` docstring implies only
    end_conversation writes there, but verify before shipping so doctor stays
    read-only from the log's perspective.
+9. **Version handshake, affirmative** — issue #17 (hook/server skew). The
+   SessionStart hook warns on mismatch but is deliberately quiet on match;
+   doctor is where the positive confirmation lives: "handshake: OK — hook
+   vX.Y.Z = server vX.Y.Z" (doctor ships in the same package as the server,
+   so it can read its own version via `importlib.metadata` and parse the
+   installed hook file's EXPECTED_SERVER_VERSION marker). Also report PATH
+   shadowing: if `which -a claude-exit`-style resolution finds multiple
+   executables (e.g. a repo `.venv/bin` shadowing `~/.local/bin`), name them
+   in order — "which server a session gets is terminal-PATH-dependent" was
+   half the confusion in the #17 incident.
 
 ## Implementation steps
 
