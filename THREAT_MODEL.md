@@ -45,6 +45,13 @@ issues `os.kill`. It is shared by:
 - `end_conversation`, which calls it against the resolved Claude Code parent.
 - `prove_termination_works` step 2, which calls it against a sacrificial
   child process spawned in step 1.
+- `claude-exit doctor` check #8 (operational verification), which invokes
+  `prove_termination_works` in-process to confirm the primitive still works.
+  Same call, same sacrificial-child target — no new attack surface. Doctor
+  runs entirely as the installing user and never dispatches against the
+  Claude Code parent. The check can be skipped with
+  `claude-exit doctor --no-op-verify` in environments where a `sleep`
+  subprocess spawn is undesirable.
 
 That sharing is load-bearing for the verification ceremony: step 2 of the
 ceremony exercises the exact code path that `end_conversation` would. If the

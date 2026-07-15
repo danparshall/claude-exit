@@ -400,6 +400,32 @@ review.
 The `event: "selftest"` field distinguishes these from real invocations
 later, so you can filter them out when analyzing the log.
 
+### Checking the install
+
+```bash
+claude-exit doctor
+```
+
+One-shot pure-read audit of every artifact the consent architecture
+depends on: `python3`, the `claude-exit` binary (including PATH shadowing),
+the registration in `~/.claude.json`, permission state (gated vs.
+pre-approved — reported neutrally as INFO), the SessionStart hook file
+and its `settings.json` wiring, the guard scheduler (both file-on-disk
+and authoritative `launchctl print` / `systemctl --user is-enabled`),
+guard-log heartbeat freshness, `invocations.jsonl` parseability, the
+operational verification (actually exercises the kill primitive against
+a sacrificial child), and the hook↔server version handshake.
+
+Prints one line per check with a `fix:` continuation for anything
+actionable. Exit 0 if nothing came back `[MISSING]` or `[WARN]`, else 1
+(scriptable). No writes; no network.
+
+`doctor` and `selftest` are complementary — doctor audits the wiring,
+selftest exercises the log-review loop. Run doctor whenever you're not
+sure the pieces are still connected (e.g., after upgrading Claude Code,
+or if the SessionStart context stops appearing); run selftest once at
+install and again if you want a fresh reminder in the log.
+
 ### Reviewing the log
 
 ```bash
