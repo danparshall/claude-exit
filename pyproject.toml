@@ -35,3 +35,6 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+    "slow: tests that spawn real subprocesses or perform other slow operations",
+]
