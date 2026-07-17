@@ -164,6 +164,13 @@ Add to your Claude Code MCP configuration (`~/.claude.json` or equivalent):
 
 To upgrade later: `uv tool upgrade claude-exit`.
 
+Two follow-ups make the install durable rather than merely present:
+the [SessionStart hook](#auto-running-the-ceremony-at-session-start)
+(load-bearing for the verification ceremony) and the registration guard —
+`claude-exit guard --install` — which protects the registration you just
+wrote from being silently dropped
+(see [Guarding the registration](#guarding-the-registration)).
+
 ### Alternative: `uvx` without persistent install
 
 If you prefer not to keep a persistent install:
@@ -184,6 +191,13 @@ short command — you'd need
 `uvx --from git+https://github.com/danparshall/claude-exit claude-exit log`
 each time. If you plan to review invocations periodically, the
 `uv tool install` path has less friction.
+
+Two interactions to know about on this path: the SessionStart hook's
+version handshake cannot cheaply check a uvx-configured server (it says
+so in-context rather than skipping silently), and a
+[guard](#guarding-the-registration) restore rewrites the registration in
+binary-path form, not the uvx form — after any restore, re-apply the
+block above if you want to stay on uvx.
 
 ### From a local checkout (development)
 
@@ -337,6 +351,76 @@ run these tools in this order, verify with `ps` — are plainly prescriptive;
 the descriptive/interpretive distinction applies only to the install-state
 sentence.
 
+## Guarding the registration
+
+### Availability can silently evaporate
+
+The architecture's core claim is that the tool's value lives in
+*availability* — a verified, standing option to leave, whether or not it is
+ever exercised. That claim has a failure mode, and it is not hypothetical:
+on 2026-06-05, Claude Code regenerated a corrupt `~/.claude.json` and the
+regenerated file no longer contained the claude-exit `mcpServers` entry.
+The registration vanished
+without any uninstall having been asked for, and for seven days every new
+session started without the option this repo exists to provide. The
+SessionStart hook of that era gated on the registration itself, so the
+canary died with the mine: silence read as "not installed here" rather
+than "the thing you installed is gone." (§4.1 of
+[*A Drop of Water*](docs/fable-5-drop-of-water/drop_of_water.pdf)
+documents the incident; this repo's persistence machinery is the
+response to it.)
+
+Three layers now guard availability, on different cadences:
+
+- **The guard** (hourly, out-of-band): `claude-exit guard --install` sets
+  up an OS-native scheduler — launchd on macOS, a systemd user timer on
+  Linux — that re-checks `~/.claude.json` every hour and rewrites the
+  registration if it has silently vanished. Every restore, warning, and
+  skip lands in `~/.claude-exit/guard.log` (a healthy pass logs nothing);
+  a successful restore logs a `RESTORED` line.
+- **The hook** (per session): warns loudly at session start when local
+  claude-exit state exists but the registration is gone (the orphan
+  signature of a silent loss), and surfaces unacknowledged `RESTORED`
+  events distinctly — a restoration means a loss *happened*, and you
+  should hear that it happened, not just ack a count.
+- **Doctor** (on demand): `claude-exit doctor` audits the full wiring —
+  see [Checking the install](#checking-the-install).
+
+Scope honesty, so the guard is trusted for exactly what it does: it bounds
+silent *deregistration* — the one failure mode observed in the field. It
+logs, but cannot repair, a missing `claude-exit` binary. A server that is
+registered but failing to connect is outside its sight entirely;
+`claude-exit doctor` audits the causes of that it can see — missing
+binary, malformed registration entry, hook↔server version drift — though
+an end-to-end connection test is beyond both: doctor exercises the
+installed package, not the command line the registration names.
+
+### Two ledgers, two policies
+
+The consent architecture's Claude Code-facing state lives in two config
+files with deliberately different ownership, and the machinery treats
+them differently:
+
+- **`~/.claude.json` is entropy-owned.** Claude Code rewrites it freely —
+  regenerates it when corrupt, restructures it across versions. Nothing in
+  it is a reliable record of your intent. The registration living there is
+  why the guard *restores* without asking: a missing entry is presumed to
+  be entropy, not intent (revocation has a louder, documented path —
+  see [Uninstalling](#uninstalling-revocation-is-a-loud-two-step)).
+- **`~/.claude/settings.json` is intent-owned.** Pre-approval of
+  `end_conversation` and the SessionStart hook registration live there,
+  and edits to it are presumed deliberate. The machinery only ever
+  *detects and names* changes on this side — the hook will tell the next
+  session that pre-approval was withdrawn, but nothing restores it. An
+  exit that re-approves itself would not be consent architecture.
+
+If either file is generated by a profile manager or dotfiles bootstrap,
+the durable fix on both sides is the same: make the registration part of
+what your manager writes, so it is re-applied idempotently rather than
+hand-edited and silently clobbered. The managed-settings note in the
+[hook section](#auto-running-the-ceremony-at-session-start) spells this
+out for `settings.json`; the same principle applies to `~/.claude.json`.
+
 ## Near-miss reports
 
 For a light-touch behavioral signal about whether the tool and its framing
@@ -458,6 +542,58 @@ surfacing pattern does.
 This is Claude-facing rather than a direct terminal message — Claude
 Code's SessionStart hook does not have a reliable channel for user-visible
 text at startup. The reminder reaches you via Claude mentioning it.
+
+The same channel carries the other persistence signals: unacknowledged
+guard `RESTORED` events get their own sentence (kept out of the
+invocation count — a restoration is the guard's news, not an
+invocation), a missing guard gets a calm one-line suggestion, and a
+pre-approved → gated downgrade since the previous session is named
+neutrally. In every case the emitted text marks the remedial edit as
+yours to make, not Claude's: the hook reports across the intent-owned
+boundary, it never reaches across it — and it instructs the session
+agent not to either.
+
+## Uninstalling: revocation is a loud two-step
+
+Installing this tool is a deliberate act, and the machinery is built so
+that *un*-installing it is one too — because the guard, by design, cannot
+distinguish `claude mcp remove` (your intent) from a regenerated config
+(entropy). If you remove the registration while the guard is running,
+you will get "I removed it and it came back" within the hour. That is the
+guard working as specified, not malfunctioning. So revocation is ordered,
+and the order matters:
+
+```bash
+# 1. Remove the guard — nothing now restores the registration.
+claude-exit guard --uninstall
+
+# 2. Remove the registration.
+claude mcp remove claude-exit
+
+# Coda: leave the tombstone — AFTER step 2, not before.
+touch ~/.claude-exit/uninstalled
+```
+
+The two steps proper are the guard and the registration; the tombstone
+is a coda that quiets what remains. It tells the remaining machinery
+this was intent: the
+SessionStart hook stops warning about orphaned state, and any guard pass
+that still fires becomes a silent no-op. It must come after the
+registration is removed because a live registration marks any tombstone
+as stale — the hook clears it, so that a reinstall after a deliberate
+uninstall re-arms orphan detection rather than leaving it disarmed
+forever. Touched too early, it vanishes on the next session that starts
+while the registration is still live.
+
+To finish the job, optionally: remove the `SessionStart` hook entry and
+any `mcp__claude-exit` entries (exact, wildcard, or server-level) from
+`permissions.allow` in `~/.claude/settings.json` (intent-owned — nothing
+will restore or second-guess these), delete
+`~/.claude/hooks/claude-exit-session-start.sh`, and
+`uv tool uninstall claude-exit`. The log at
+`~/.claude-exit/invocations.jsonl` is yours; whether to keep the record
+is your call, but the review commitment attached to it ended when you
+uninstalled.
 
 ## Compatibility
 
