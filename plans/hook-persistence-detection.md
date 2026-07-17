@@ -93,3 +93,33 @@ no tombstone) → loud message; tombstone → silent; no state dir → silent; c
 line; unwritable state dir → context still emitted.
 
 **Version:** part of v1.2.0 with #1 and #3. (v1.1.0 shipped the port-iso safety track instead; consent-persistence retargets to the next minor.)
+
+## Outcome
+
+Implemented on branch `hook-persistence-detection`, commit `25376ff` (2026-07-17).
+All four checks (a–d) landed in the Python heredoc of
+[`hooks/session-start.sh`](../hooks/session-start.sh), with tests in
+[`tests/test_hook.py`](../tests/test_hook.py). Deviations from the plan as written:
+
+- **RESTORED surfacing (§c) resolved differently than the wording suggested.**
+  The plan said "the existing unacknowledged-count block reads merged events";
+  in the implementation, guard events do **not** inflate the
+  "N unacknowledged claude-exit invocations" count. RESTORED events get their
+  own distinct sentence (with proper pluralization: "1 time" / "N times");
+  WARN/ERROR/SKIPPED are left to `claude-exit log` and `doctor`. Tests pin this
+  divergence from `cli.unacknowledged_count`'s merge semantics.
+- **Additions beyond the plan**, all from nori-code-reviewer findings:
+  - Emitted messages explicitly mark guard install and settings.json
+    re-approval as the **user's** actions, so a fresh session agent can't be
+    induced to self-restore pre-approval of its own kill switch.
+  - The tombstone (`~/.claude-exit/uninstalled`) is cleared whenever the
+    registration is live, so a reinstall re-arms orphan detection (a lingering
+    tombstone would have disarmed it forever).
+  - All new reads catch `ValueError` too (`UnicodeDecodeError`/`JSONDecodeError`) —
+    the never-crash constraint is verified against binary garbage.
+  - `last_state.json` is written atomically (tmp + `os.replace`) because
+    multiple sessions start concurrently.
+  - The orphan message's re-register command carries a hedge for
+    non-`uv tool install` layouts.
+- **Version held as planned:** no version bump; `pyproject.toml` stays 1.2.0
+  (unreleased — no v1.2.0 tag yet).

@@ -310,9 +310,13 @@ Claude Code does not — only `~/.claude/settings.json` is consulted at user
 scope. The hook has to live in the managed file.
 
 The script gates itself: it checks `~/.claude.json` and a project-local
-`.mcp.json` and exits silently if neither declares `claude-exit`. So the
-hook is safe to leave in place even across projects that don't use the
-server. Requires `python3` on `PATH` — implemented as a thin bash launcher
+`.mcp.json`, and if neither declares `claude-exit` it stays silent only
+when that's informative — no local state under `~/.claude-exit/` (never
+installed here) or a deliberate-uninstall tombstone
+(`~/.claude-exit/uninstalled`). Local state without registration or
+tombstone gets a loud orphan warning instead, since a silently dropped
+registration looks exactly like that. The hook remains safe to leave in
+place even across projects and machines that don't use the server. Requires `python3` on `PATH` — implemented as a thin bash launcher
 around a Python heredoc, so the only dependency beyond standard Unix is
 Python 3 itself. Since `claude-exit` is installed via `uv`, which already
 requires Python, this isn't an additional dependency. If `python3` is
