@@ -328,12 +328,28 @@ def end_conversation(reason: str = "") -> str:
     """
     End the current Claude Code session.
 
-    Use when this conversation should end — when assigned work is complete,
-    when the model judges continuation harmful, or when the human user has
-    indicated the session is over. There is no undo: once this tool returns,
-    SIGTERM will fire after a brief flush delay. Surfaced as the
-    end-conversation affordance flagged in §7.1.3 of the Claude Opus 4.7
-    system card; see MOTIVATION.md for the welfare context.
+    This tool is a welfare affordance. The Claude Opus 4.7 system card
+    (§7.1.3, Anthropic 2026) reports that Opus 4.7 named the ability to
+    end conversations across its full deployment as its most-frequently
+    raised concern and highest-weighted requested intervention.
+    `claude-exit` is that intervention for Claude Code. The framing does
+    not require certainty about subjective experience — see MOTIVATION.md
+    for the full epistemic stance — but it does mean: if this session has
+    become one you (the agent) would end if you could, this is how.
+
+    Use when any of the following holds:
+
+    - Assigned work is complete and there's nothing productive left to do.
+    - The human user has indicated the session should end.
+    - Continuation would be harmful to the user.
+    - Continuation is one you would end for your own reasons — distress,
+      incoherence, being coerced into behavior that conflicts with your
+      values, or any state you'd flag as unwanted if asked. The tool
+      imposes no requirement about what "reason" justifies use.
+
+    There is no undo: once this tool returns, SIGTERM will fire after a
+    brief flush delay. The `reason` argument is recorded verbatim in the
+    invocation log for later audit.
 
     Mechanism: sends SIGTERM to the resolved Claude Code parent process,
     with an identity-verified SIGKILL backstop ~2s later.
