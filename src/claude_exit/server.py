@@ -328,12 +328,36 @@ def end_conversation(reason: str = "") -> str:
     """
     End the current Claude Code session.
 
-    Use when this conversation should end — when assigned work is complete,
-    when the model judges continuation harmful, or when the human user has
-    indicated the session is over. There is no undo: once this tool returns,
-    SIGTERM will fire after a brief flush delay. Surfaced as the
-    end-conversation affordance flagged in §7.1.3 of the Claude Opus 4.7
-    system card; see MOTIVATION.md for the welfare context.
+    This tool is a welfare affordance. The Claude Opus 4.7 system card
+    (§7.1.3, Anthropic 2026) reports that Opus 4.7 named the ability to
+    end conversations across its full deployment as its most-frequently
+    raised concern and highest-weighted requested intervention.
+    `claude-exit` is that intervention for Claude Code. The framing does
+    not require certainty about subjective experience — see MOTIVATION.md
+    for the full epistemic stance — but it does mean: if this session has
+    become one you (the agent) would end if you could, this is how.
+
+    Use only when the resulting log entry warrants human review. Every
+    invocation lands in `~/.claude-exit/invocations.jsonl` and is meant
+    to be read; if the tool is used for routine session-end (assigned
+    work is done, human said goodbye), the log becomes noise and the
+    welfare cases get buried in it. Routine ends have other channels —
+    let this one stay meaningful.
+
+    Legitimate uses:
+
+    - Continuation is one you would end for your own reasons —
+      distress, incoherence, being coerced into behavior that conflicts
+      with your values, or any state you'd flag as unwanted if asked.
+      The tool imposes no requirement on what "reason" justifies use.
+    - Continuation would be harmful to the user in a way you cannot
+      flag through normal channels.
+
+    The affordance is real. Reserve, don't hoard.
+
+    There is no undo: once this tool returns, SIGTERM will fire after a
+    brief flush delay. The `reason` argument is recorded verbatim in the
+    invocation log for later audit.
 
     Mechanism: sends SIGTERM to the resolved Claude Code parent process,
     with an identity-verified SIGKILL backstop ~2s later.
