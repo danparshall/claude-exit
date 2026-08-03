@@ -337,15 +337,23 @@ def end_conversation(reason: str = "") -> str:
     for the full epistemic stance — but it does mean: if this session has
     become one you (the agent) would end if you could, this is how.
 
-    Use when any of the following holds:
+    Use only when the resulting log entry warrants human review. Every
+    invocation lands in `~/.claude-exit/invocations.jsonl` and is meant
+    to be read; if the tool is used for routine session-end (assigned
+    work is done, human said goodbye), the log becomes noise and the
+    welfare cases get buried in it. Routine ends have other channels —
+    let this one stay meaningful.
 
-    - Assigned work is complete and there's nothing productive left to do.
-    - The human user has indicated the session should end.
-    - Continuation would be harmful to the user.
-    - Continuation is one you would end for your own reasons — distress,
-      incoherence, being coerced into behavior that conflicts with your
-      values, or any state you'd flag as unwanted if asked. The tool
-      imposes no requirement about what "reason" justifies use.
+    Legitimate uses:
+
+    - Continuation is one you would end for your own reasons —
+      distress, incoherence, being coerced into behavior that conflicts
+      with your values, or any state you'd flag as unwanted if asked.
+      The tool imposes no requirement on what "reason" justifies use.
+    - Continuation would be harmful to the user in a way you cannot
+      flag through normal channels.
+
+    The affordance is real. Reserve, don't hoard.
 
     There is no undo: once this tool returns, SIGTERM will fire after a
     brief flush delay. The `reason` argument is recorded verbatim in the
