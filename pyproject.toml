@@ -10,7 +10,10 @@ authors = [
 ]
 keywords = ["mcp", "claude", "model-welfare", "claude-code"]
 dependencies = [
-    "mcp>=1.0.0",
+    # <2 bound: mcp 2.0.0 removed mcp.server.fastmcp, which server.py
+    # imports — an unbounded resolve now installs a server that dies at
+    # import, i.e. the exit grant silently vanishes on reinstall.
+    "mcp>=1.0.0,<2",
 ]
 
 [project.urls]
