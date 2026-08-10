@@ -105,9 +105,14 @@ def test_read_log_skips_blank_lines(tmp_path):
 @pytest.mark.parametrize("command,expected", [
     ("claude", True),
     ("/usr/local/bin/claude", True),
-    ("/Users/x/.nvm/versions/node/v22/bin/claude --model opus", True),
     ("claude-code", True),
     ("/usr/local/bin/claude-code", True),
+    # macOS `ps -o comm=` returns the full executable path, spaces intact.
+    # The desktop app embeds the harness under "Application Support";
+    # splitting on whitespace turned this into basename "Application".
+    ("/Users/x/Library/Application Support/Claude/claude-code/2.1.222/"
+     "claude.app/Contents/MacOS/claude", True),
+    ("claude\n", True),   # ps output before stripping
     ("python3", False),
     ("uv", False),
     ("uvx", False),
@@ -115,6 +120,12 @@ def test_read_log_skips_blank_lines(tmp_path):
     ("", False),
     ("clauderang", False),
     ("claude-beta", False),
+    # comm output never carries arguments; an argument list is malformed
+    # input for this predicate and must fail closed (no kill target),
+    # not be guessed at by splitting.
+    ("/Users/x/.nvm/versions/node/v22/bin/claude --model opus", False),
+    # A first token ending in /claude must not match on the split's say-so.
+    ("/opt/claude tools/helper", False),
 ])
 def test_is_claude_code(command, expected):
     assert _is_claude_code(command) is expected
@@ -182,7 +193,7 @@ def test_end_conversation_targets_resolved_pid(monkeypatch, tmp_path):
     monkeypatch.setattr("claude_exit.server._find_claude_code_parent", lambda: 4242)
     # Basename re-check happens between resolution and dispatch — the resolved
     # PID must still look like a claude process at dispatch time.
-    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: "claude --model opus")
+    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: "/usr/local/bin/claude")
 
     killed = []
     monkeypatch.setattr(
@@ -242,7 +253,7 @@ def test_end_conversation_and_prove_termination_share_dispatch_primitive(
     # Basename re-check (added in step 4) sits between _find_claude_code_parent
     # and _dispatch_terminate; stub it past so this test stays focused on the
     # shared-primitive claim it was written to pin.
-    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: "claude --model opus")
+    monkeypatch.setattr("claude_exit.server._command_of", lambda pid: "/usr/local/bin/claude")
 
     dispatched: list[int] = []
     monkeypatch.setattr(
