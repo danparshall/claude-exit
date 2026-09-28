@@ -252,10 +252,19 @@ def _uid_of(pid: int) -> int | None:
 
 
 def _is_claude_code(command: str) -> bool:
-    """True if `command` basename matches a known Claude Code binary name."""
+    """True if `command` names a known Claude Code binary.
+
+    `command` is `ps -o comm=` output: the executable path (macOS) or
+    process name (Linux) — never an argument list, so it must not be
+    split on whitespace. The Claude desktop app embeds the Claude Code
+    harness under `~/Library/Application Support/Claude/claude-code/…`,
+    and splitting that path at the space yields basename `Application`,
+    silently defeating parent resolution for every desktop-app session.
+    Unmatched input fails closed: no kill target is resolved.
+    """
     if not command:
         return False
-    return os.path.basename(command.split()[0]) in CLAUDE_BINARY_NAMES
+    return os.path.basename(command.strip()) in CLAUDE_BINARY_NAMES
 
 
 def _find_claude_code_parent(start_pid: int | None = None) -> int | None:
