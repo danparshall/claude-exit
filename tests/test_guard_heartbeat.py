@@ -389,3 +389,60 @@ def test_linux_empty_exec_start_stays_ok(tmp_path, monkeypatch):
         runner=_runner_with("ExecStart="),
     )
     assert result.status == OK
+
+
+# ---- CLI path: heartbeat follows a redirected GUARD_LOG ----------------------
+
+
+def test_cli_guard_heartbeat_follows_redirected_guard_log(tmp_path, monkeypatch):
+    """`claude-exit guard` with GUARD_LOG redirected writes its heartbeat
+    next to that log — not into the real state dir.
+
+    Callers that redirect the log (tests, alternate state dirs) patch
+    GUARD_LOG and expect every per-pass artifact to follow it. The
+    2026-09-28 rollout found the full test suite rewriting the real
+    ~/.claude-exit/guard.heartbeat.json with `action: config_missing`,
+    which made `doctor` report a fresh guard run that never happened.
+    """
+    from claude_exit.guard import guard_command
+
+    bin_path = tmp_path / "bin"
+    bin_path.mkdir()
+    fake = bin_path / "claude-exit"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_path))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    state_dir = tmp_path / ".claude-exit"
+    monkeypatch.setattr("claude_exit.guard.CLAUDE_JSON", tmp_path / ".claude.json")
+    monkeypatch.setattr("claude_exit.guard.TOMBSTONE", state_dir / "uninstalled")
+    monkeypatch.setattr("claude_exit.guard.GUARD_LOG", state_dir / "guard.log")
+    # Decoy: if guard_command ever passes GUARD_HEARTBEAT explicitly again,
+    # the stray write lands here, not in the real ~/.claude-exit/.
+    monkeypatch.setattr(
+        "claude_exit.guard.GUARD_HEARTBEAT",
+        tmp_path / "decoy-home" / ".claude-exit" / "guard.heartbeat.json",
+    )
+
+    rc = guard_command([])
+
+    assert rc == 0
+    hb = json.loads((state_dir / "guard.heartbeat.json").read_text())
+    assert hb["action"] == "config_missing"
+
+
+def test_check_guard_heartbeat_default_follows_guard_log(tmp_path):
+    """With no explicit `heartbeat=`, doctor looks for the heartbeat next to
+    the given guard_log — not in the real state dir.
+
+    Same seam as guard_pass: callers that redirect the log (tests, alternate
+    state dirs) must not have doctor silently read ~/.claude-exit/. Before
+    this, test_doctor.py's heartbeat tests flipped between pass and fail
+    depending on whether a real heartbeat file happened to exist.
+    """
+    log = tmp_path / "guard.log"
+    _write_heartbeat_file(tmp_path / "guard.heartbeat.json", age_hours=48)
+    result = check_guard_heartbeat(guard_log=log, scheduler_installed=True)
+    assert result.status == WARN
+    assert "guard heartbeat" in result.message

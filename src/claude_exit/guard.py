@@ -682,7 +682,6 @@ def guard_command(args: list[str]) -> int:
             claude_json=CLAUDE_JSON,
             tombstone=TOMBSTONE,
             guard_log=GUARD_LOG,
-            heartbeat=GUARD_HEARTBEAT,
         )
     if args == ["--install"]:
         return install_scheduler()

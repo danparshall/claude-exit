@@ -552,7 +552,7 @@ def check_guard_heartbeat(
     hb = (
         heartbeat
         if heartbeat is not None
-        else (STATE_DIR / "guard.heartbeat.json")
+        else (log.parent / "guard.heartbeat.json")
     )
     ts = guard_heartbeat_timestamp(hb)
     source = "guard heartbeat"
