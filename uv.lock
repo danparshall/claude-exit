@@ -127,7 +127,7 @@ wheels = [
 
 [[package]]
 name = "claude-exit"
-version = "1.2.0"
+version = "1.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
@@ -139,7 +139,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "mcp", specifier = ">=1.0.0" }]
+requires-dist = [{ name = "mcp", specifier = ">=1.0.0,<2" }]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=7.0" }]

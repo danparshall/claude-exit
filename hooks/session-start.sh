@@ -82,7 +82,7 @@ def emit(context):
 # tests/test_version_handshake.py); the runtime handshake below covers the
 # cross-channel case no in-repo test can reach — a hook copy and an installed
 # server that update through different channels (issue #17).
-EXPECTED_SERVER_VERSION = "1.2.0"
+EXPECTED_SERVER_VERSION = "1.2.1"
 
 
 def load_json(path):
