@@ -44,6 +44,7 @@ from .checks import (
     STATE_DIR,
     SYSTEMD_TIMER,
     TOMBSTONE,
+    guard_heartbeat_timestamp,
     guard_last_heartbeat,
     guard_scheduled,
     hook_expected_server_version,
@@ -338,6 +339,56 @@ def check_hook(
     )
 
 
+def _launchd_stale_target(print_output: str) -> str | None:
+    """
+    Inspect `launchctl print` output for a stale guard target.
+
+    Returns a short human-readable description of the problem, or None
+    when the effective target looks right (or cannot be judged — an
+    unresolvable expected binary, or output with no recognizable
+    program/arguments section, yields None rather than a false alarm;
+    check_binary already reports an unresolvable binary on its own line).
+
+    "Right" means the currently installed claude-exit binary appears in
+    the job's program/arguments. The comparison is deliberately a
+    substring check over the whole output: `launchctl print` formatting
+    varies across macOS versions, and the failure mode we are catching —
+    a plist frozen on a moved source-checkout path — fails the substring
+    test under every formatting variant.
+    """
+    expected = resolve_binary()
+    if expected is None:
+        return None
+    lowered = print_output.lower()
+    if "program" not in lowered and "arguments" not in lowered:
+        return None
+    if str(expected) in print_output:
+        return None
+    return (
+        f"the loaded job does not reference the installed binary "
+        f"{expected}; it may still point at a moved or deleted path"
+    )
+
+
+def _launchd_last_exit_code(print_output: str) -> int | None:
+    """
+    Extract `last exit code = N` from `launchctl print` output.
+
+    Returns the integer when present and numeric, None otherwise
+    (including the never-ran form `last exit code = (never exited)`,
+    which is normal right after --install and not a failure signal).
+    """
+    for line in print_output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("last exit code"):
+            _, _, value = stripped.partition("=")
+            try:
+                return int(value.strip())
+            except ValueError:
+                return None
+    return None
+
+
 def check_guard_scheduler(
     *,
     launchd_plist: Path | None = None,
@@ -387,6 +438,33 @@ def check_guard_scheduler(
                 ),
                 fix="claude-exit guard --install  (idempotent — safe to re-run)",
             )
+        # Loaded is not enough: a job can be loaded, fire on schedule, and
+        # still run the wrong thing — e.g. a plist generated against a
+        # source checkout that has since moved, failing on every fire while
+        # every presence check stays green (the 2026-08-28 codex-exit
+        # incident). Verify the effective target and the last exit code.
+        stale = _launchd_stale_target(result.stdout)
+        if stale is not None:
+            return Check(
+                WARN,
+                (
+                    f"guard scheduler loaded — launchd {target} — but its "
+                    f"target looks stale: {stale}"
+                ),
+                fix="claude-exit guard --install  (idempotent — safe to re-run)",
+            )
+        last_exit = _launchd_last_exit_code(result.stdout)
+        if last_exit not in (None, 0):
+            return Check(
+                WARN,
+                (
+                    f"guard scheduler loaded — launchd {target} — but its "
+                    f"last run exited {last_exit}; the scheduled guard may "
+                    f"not be completing "
+                    f"(see {STATE_DIR}/launchd.err.log)"
+                ),
+                fix="claude-exit guard --install  (idempotent — safe to re-run)",
+            )
         return Check(OK, f"guard scheduler loaded — launchd {target}")
 
     if p.startswith("linux"):
@@ -404,6 +482,40 @@ def check_guard_scheduler(
                 ),
                 fix="claude-exit guard --install  (idempotent — safe to re-run)",
             )
+        # Same stale-target concern as the launchd arm: enabled says the
+        # timer will fire, not that the service it fires still points at
+        # the installed binary. Ask systemd for the effective ExecStart.
+        expected = resolve_binary()
+        if expected is not None:
+            show = run(
+                [
+                    "systemctl", "--user", "show",
+                    "claude-exit-guard.service", "-p", "ExecStart",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            exec_start = show.stdout.strip()
+            # Judge only a real ExecStart body; an empty property or a
+            # failed `show` is "can't tell", not "stale" — no false alarms.
+            if (
+                show.returncode == 0
+                and exec_start.startswith("ExecStart=")
+                and exec_start != "ExecStart="
+                and str(expected) not in exec_start
+            ):
+                return Check(
+                    WARN,
+                    (
+                        "guard scheduler loaded — systemd "
+                        "claude-exit-guard.timer — but the service's "
+                        f"ExecStart does not reference {expected}; "
+                        "the unit may point at a stale path"
+                    ),
+                    fix=(
+                        "claude-exit guard --install  "
+                        "(idempotent — safe to re-run)"
+                    ),
+                )
         return Check(OK, "guard scheduler loaded — systemd claude-exit-guard.timer")
 
     return Check(
@@ -416,38 +528,59 @@ def check_guard_scheduler(
 def check_guard_heartbeat(
     *,
     guard_log: Path | None = None,
+    heartbeat: Path | None = None,
     scheduler_installed: bool,
 ) -> Check | None:
-    """Check #6b: guard.log heartbeat freshness.
+    """Check #6b: guard heartbeat freshness.
+
+    Freshness source, in order of preference:
+
+      1. the heartbeat file rewritten by every guard pass (including the
+         healthy no-op) — the authoritative "when did the guard last
+         actually run";
+      2. guard.log's latest entry — the pre-heartbeat fallback, which
+         only moves when something needed attention, so on a healthy
+         machine it goes stale without meaning anything.
 
     Returns None (no line) when the scheduler isn't installed — a stale
     heartbeat is only meaningful if something is supposed to be writing
-    to the log.
+    one.
     """
     if not scheduler_installed:
         return None
     log = guard_log if guard_log is not None else (STATE_DIR / "guard.log")
-    ts = guard_last_heartbeat(log)
+    hb = (
+        heartbeat
+        if heartbeat is not None
+        else (STATE_DIR / "guard.heartbeat.json")
+    )
+    ts = guard_heartbeat_timestamp(hb)
+    source = "guard heartbeat"
     if ts is None:
-        # Scheduler installed but no log yet. Common right after --install;
-        # first pass fires "at load" but may not have happened yet.
+        ts = guard_last_heartbeat(log)
+        source = "guard.log latest entry"
+    if ts is None:
+        # Scheduler installed but neither heartbeat nor log yet. Common
+        # right after --install; first pass fires "at load" but may not
+        # have happened yet.
         return Check(
             INFO,
             (
-                f"guard scheduler installed but no entries in {log} yet "
+                f"guard scheduler installed but no heartbeat at {hb} "
+                f"and no entries in {log} yet "
                 "(first pass may not have fired — check back after the next hour)"
             ),
         )
     hours = hours_since(ts)
     if hours is None:
         # Naive timestamp — report the raw value, don't guess.
-        return Check(WARN, f"guard.log latest entry has ambiguous timestamp: {ts}")
+        return Check(WARN, f"{source} has ambiguous timestamp: {ts}")
     if hours < 0:
         # Future timestamp — clock skew or something wrote a future date.
         return Check(
             INFO,
             (
-                f"guard.log latest entry is in the future "
+                f"{source} is in the future "
                 f"({-hours:.1f}h ahead — clock skew?) — {ts}"
             ),
         )
@@ -455,7 +588,7 @@ def check_guard_heartbeat(
         return Check(
             WARN,
             (
-                f"guard.log latest entry is {hours:.1f}h old "
+                f"{source} is {hours:.1f}h old "
                 "(scheduler should fire hourly — may be stalled) — "
                 f"latest: {ts}"
             ),

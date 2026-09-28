@@ -67,6 +67,8 @@ from .checks import (
 
 
 GUARD_LOG = Path.home() / ".claude-exit" / "guard.log"
+GUARD_HEARTBEAT = Path.home() / ".claude-exit" / "guard.heartbeat.json"
+GUARD_INTERVAL_SECONDS = 3600
 LAUNCHD_LABEL = "io.claude-exit.guard"
 SYSTEMD_TIMER_NAME = "claude-exit-guard.timer"
 SYSTEMD_SERVICE_NAME = "claude-exit-guard.service"
@@ -80,6 +82,7 @@ def guard_pass(
     claude_json: Path = CLAUDE_JSON,
     tombstone: Path = TOMBSTONE,
     guard_log: Path = GUARD_LOG,
+    heartbeat: Path | None = None,
 ) -> int:
     """
     Run one check-and-restore pass.
@@ -90,11 +93,27 @@ def guard_pass(
 
     Never raises into the scheduler. All decisions land in guard.log; the
     exit code is for the scheduler's own bookkeeping, not for the user.
+
+    Every pass — including the healthy silent no-op and the tombstoned
+    no-op — rewrites the heartbeat file. Without that, a stale heartbeat
+    is ambiguous between "scheduler dead" and "nothing needed repair",
+    and doctor cannot tell a healthy machine from one whose scheduler
+    silently stopped firing.
+
+    `heartbeat=None` (the default) resolves to guard.heartbeat.json next
+    to `guard_log`, so callers that redirect the log — tests, or an
+    alternate state dir — get the heartbeat redirected with it instead of
+    silently writing into the real HOME.
     """
+    if heartbeat is None:
+        heartbeat = guard_log.parent / GUARD_HEARTBEAT.name
+
     if tombstone_present(tombstone):
-        return 0  # Deliberate uninstall — silent no-op.
+        _write_heartbeat(heartbeat, action="tombstoned")
+        return 0  # Deliberate uninstall — otherwise a silent no-op.
 
     state = registration_state(claude_json)
+    _write_heartbeat(heartbeat, action=str(state))
 
     if state == REG_PRESENT_WELL_FORMED:
         return 0
@@ -319,6 +338,44 @@ def _log_guard(guard_log: Path, level: str, message: str) -> None:
     ts = datetime.now(timezone.utc).isoformat()
     with open(guard_log, "a") as f:
         f.write(f"{ts} {level}: {message}\n")
+
+
+# --- heartbeat writer --------------------------------------------------------
+
+
+def _write_heartbeat(heartbeat: Path, *, action: str) -> None:
+    """
+    Overwrite (not append) the heartbeat file with this pass's snapshot.
+
+    The heartbeat answers exactly one question — "when did a guard pass
+    last run, and what did it see?" — so it is a single rewritten JSON
+    object, not a log; history stays in guard.log. `action` is the
+    registration state observed at pass time ("present_well_formed",
+    "absent", ...) or "tombstoned".
+
+    Best-effort by design: a heartbeat that cannot be written must not
+    fail the pass (the pass's own work matters more), and the failure is
+    self-surfacing — doctor reports the heartbeat as stale/absent on its
+    next run, which is precisely the signal a broken write path should
+    produce.
+    """
+    payload = {
+        "schema_version": 1,
+        "service": "claude-exit",
+        "action": action,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "expected_interval_seconds": GUARD_INTERVAL_SECONDS,
+    }
+    try:
+        heartbeat.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_str = tempfile.mkstemp(
+            dir=str(heartbeat.parent), prefix=heartbeat.name + ".tmp."
+        )
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f)
+        os.replace(tmp_str, heartbeat)
+    except OSError:
+        pass
 
 
 # --- scheduler: file-content generators --------------------------------------
@@ -625,6 +682,7 @@ def guard_command(args: list[str]) -> int:
             claude_json=CLAUDE_JSON,
             tombstone=TOMBSTONE,
             guard_log=GUARD_LOG,
+            heartbeat=GUARD_HEARTBEAT,
         )
     if args == ["--install"]:
         return install_scheduler()

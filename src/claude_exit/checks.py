@@ -437,6 +437,31 @@ def guard_last_heartbeat(guard_log: Path) -> str | None:
     return latest
 
 
+def guard_heartbeat_timestamp(heartbeat: Path) -> str | None:
+    """
+    Doctor check #6 half. Return `timestamp_utc` from the heartbeat file
+    written by every guard pass, or None if the file is absent, is not a
+    JSON object, or lacks a string `timestamp_utc`.
+
+    The heartbeat is the authoritative freshness signal: unlike guard.log
+    (which healthy passes do not touch), it is rewritten on every pass, so
+    its age measures "when did the scheduler last actually fire the guard"
+    rather than "when did something last go wrong". Interpretation
+    (staleness threshold, clock skew) lives in doctor.py; this stays a
+    pure fact.
+    """
+    if not heartbeat.exists():
+        return None
+    try:
+        payload = json.loads(heartbeat.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    ts = payload.get("timestamp_utc")
+    return ts if isinstance(ts, str) else None
+
+
 def hours_since(ts: str) -> float | None:
     """
     Doctor check #6 helper. Hours between `ts` (ISO-8601) and now (UTC).
